@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, List, Tuple
 import numpy as np
@@ -46,6 +47,7 @@ class LabeledVideoDataset(Dataset):
         view_name: list = ["front", "left", "right"],
         annotator_id: Optional[int] = None,
         kpt_temporal_subsample_num: int = 8,
+        batch_unit: str = "chunk",
     ) -> None:
         super().__init__()
         self._experiment = experiment
@@ -57,12 +59,19 @@ class LabeledVideoDataset(Dataset):
         self.load_kpt = bool(load_kpt)
         self._annotator_id = annotator_id
         self.kpt_temporal_subsample_num = int(kpt_temporal_subsample_num)
+        self.batch_unit = str(batch_unit)
+        if self.batch_unit not in {"chunk", "segment"}:
+            raise ValueError(
+                f"Unsupported batch_unit={self.batch_unit}. "
+                "Expected 'chunk' or 'segment'."
+            )
 
         self.view_name = view_name
 
         # Video chunking to avoid OOM during loading
         self.max_video_frames = max_video_frames
         self._chunked_index: List[Dict[str, Any]] = []
+        self._segment_index: List[Dict[str, Any]] = []
 
         # label mapping: {class_id: "label_name"} -> {"label_name": class_id}
         self._label_to_id: Dict[str, int] = {
@@ -93,15 +102,59 @@ class LabeledVideoDataset(Dataset):
                 f"{len(self._chunked_index)} chunks (max {self.max_video_frames} frames/chunk)"
             )
 
-        self._build_valid_source_indices()
-        source_total = (
-            len(self._chunked_index)
-            if self.max_video_frames is not None
-            else len(self._index_mapping)
-        )
-        logger.info(
-            f"Labeled sample filtering: kept {len(self._valid_source_indices)}/{source_total} samples"
-        )
+        if self.batch_unit == "segment":
+            self._build_segment_index()
+            logger.info(
+                f"Segment batching enabled: {len(self._segment_index)} labeled segments"
+            )
+        else:
+            self._build_valid_source_indices()
+            source_total = (
+                len(self._chunked_index)
+                if self.max_video_frames is not None
+                else len(self._index_mapping)
+            )
+            logger.info(
+                f"Labeled sample filtering: kept {len(self._valid_source_indices)}/{source_total} samples"
+            )
+
+    def _read_video_with_retry(
+        self,
+        path: str,
+        kwargs: Dict[str, Any],
+        attempts: int = 3,
+        delay_sec: float = 0.2,
+    ):
+        """Retry transient PyAV/ffmpeg EAGAIN failures from concurrent decoding."""
+        last_error = None
+        for attempt in range(1, int(attempts) + 1):
+            try:
+                return read_video(path, **kwargs)
+            except BlockingIOError as exc:
+                last_error = exc
+                if attempt >= attempts:
+                    break
+                logger.warning(
+                    "read_video transient BlockingIOError for %s; retry %s/%s",
+                    path,
+                    attempt,
+                    attempts,
+                )
+                time.sleep(float(delay_sec) * attempt)
+            except OSError as exc:
+                if getattr(exc, "errno", None) != 11:
+                    raise
+                last_error = exc
+                if attempt >= attempts:
+                    break
+                logger.warning(
+                    "read_video transient errno=11 for %s; retry %s/%s",
+                    path,
+                    attempt,
+                    attempts,
+                )
+                time.sleep(float(delay_sec) * attempt)
+        raise last_error
 
     def _get_annotation_range(
         self, item: VideoSample
@@ -262,7 +315,109 @@ class LabeledVideoDataset(Dataset):
                 )
 
     def __len__(self) -> int:
+        if self.batch_unit == "segment":
+            return len(self._segment_index)
         return len(self._valid_source_indices)
+
+    def _source_context(self, source_index: int) -> Dict[str, Any]:
+        if self.max_video_frames is not None:
+            chunk_info = self._chunked_index[source_index]
+            item = chunk_info["original_item"]
+            chunk_start_frame = int(chunk_info["chunk_start_frame"])
+            chunk_end_frame = chunk_info["chunk_end_frame"]
+            start_frame_offset = int(chunk_info["start_frame_offset"])
+            loaded_abs_start = start_frame_offset + chunk_start_frame
+            loaded_abs_end = start_frame_offset + (
+                int(chunk_end_frame)
+                if chunk_end_frame is not None
+                else chunk_start_frame + int(self.max_video_frames)
+            )
+            return {
+                "item": item,
+                "chunk_start_frame": chunk_start_frame,
+                "chunk_end_frame": chunk_end_frame,
+                "chunk_idx": int(chunk_info["chunk_idx"]),
+                "total_chunks": int(chunk_info["total_chunks"]),
+                "start_frame_offset": start_frame_offset,
+                "loaded_abs_start": loaded_abs_start,
+                "loaded_abs_end": loaded_abs_end,
+            }
+
+        item = self._index_mapping[source_index]
+        anno_start_frame, anno_end_frame = self._get_annotation_range(item)
+        loaded_abs_start = anno_start_frame
+        loaded_abs_end = anno_end_frame
+        return {
+            "item": item,
+            "chunk_start_frame": 0,
+            "chunk_end_frame": None,
+            "chunk_idx": 0,
+            "total_chunks": 1,
+            "start_frame_offset": anno_start_frame,
+            "loaded_abs_start": loaded_abs_start,
+            "loaded_abs_end": loaded_abs_end,
+        }
+
+    def _build_segment_index(self) -> None:
+        source_total = (
+            len(self._chunked_index)
+            if self.max_video_frames is not None
+            else len(self._index_mapping)
+        )
+        for source_index in range(source_total):
+            context = self._source_context(source_index)
+            item = context["item"]
+            loaded_abs_start = int(context["loaded_abs_start"])
+            loaded_abs_end = context["loaded_abs_end"]
+            if loaded_abs_end is None:
+                continue
+            loaded_abs_end = int(loaded_abs_end)
+            total_frames = max(0, loaded_abs_end - loaded_abs_start)
+            if total_frames <= 0:
+                continue
+
+            timeline_list = self._get_timeline_in_abs_range(
+                item,
+                loaded_abs_start,
+                loaded_abs_end,
+            )
+            adjusted_timeline = []
+            for seg in timeline_list:
+                seg_rel_start = max(0, int(seg["start"]) - loaded_abs_start)
+                seg_rel_end = min(total_frames, int(seg["end"]) - loaded_abs_start)
+                if seg_rel_end <= seg_rel_start:
+                    continue
+                adjusted_timeline.append(
+                    {
+                        "start": seg_rel_start,
+                        "end": seg_rel_end,
+                        "label": str(seg["label"]),
+                    }
+                )
+
+            filled_timeline = self._fill_tail_as_front(adjusted_timeline, total_frames)
+            valid_segments = []
+            for seg in filled_timeline:
+                label = normalize_label_to_4_class(str(seg["label"]))
+                if label not in self._label_to_id:
+                    continue
+                valid_segments.append((seg, label))
+
+            segment_count = len(valid_segments)
+            for segment_idx, (seg, label) in enumerate(valid_segments):
+                self._segment_index.append(
+                    {
+                        **context,
+                        "source_index": source_index,
+                        "segment_idx": segment_idx,
+                        "segment_count": segment_count,
+                        "segment_start_frame": int(seg["start"]),
+                        "segment_end_frame": int(seg["end"]),
+                        "segment_abs_start": loaded_abs_start + int(seg["start"]),
+                        "segment_abs_end": loaded_abs_start + int(seg["end"]),
+                        "label": label,
+                    }
+                )
 
     # ===== FPS Management =====
     def _get_fps_cached(self, path: Path) -> int:
@@ -281,12 +436,14 @@ class LabeledVideoDataset(Dataset):
             # Only probe once per unique video path
             try:
                 # Read minimal amount to get metadata
-                _, _, info = read_video(
+                _, _, info = self._read_video_with_retry(
                     path_str,
-                    pts_unit="sec",
-                    output_format="TCHW",
-                    start_pts=0.0,
-                    end_pts=0.001,  # Read first 1ms to get header info
+                    {
+                        "pts_unit": "sec",
+                        "output_format": "TCHW",
+                        "start_pts": 0.0,
+                        "end_pts": 0.001,  # Read first 1ms to get header info
+                    },
                 )
                 fps = int(info.get("video_fps", 0))
                 if fps <= 0:
@@ -298,7 +455,9 @@ class LabeledVideoDataset(Dataset):
                     f"Failed to probe fps from {path}: {e}. Will retry on full load."
                 )
                 # Fall back to full load to get fps
-                _, _, info = read_video(path_str, pts_unit="sec", output_format="TCHW")
+                _, _, info = self._read_video_with_retry(
+                    path_str, {"pts_unit": "sec", "output_format": "TCHW"}
+                )
                 fps = int(info.get("video_fps", 0))
                 if fps <= 0:
                     raise ValueError(f"Invalid fps={fps} for video: {path}")
@@ -349,7 +508,7 @@ class LabeledVideoDataset(Dataset):
         if end_sec is not None:
             kwargs["end_pts"] = end_sec
 
-        vframes, aframes, info = read_video(str(path), **kwargs)
+        vframes, aframes, info = self._read_video_with_retry(str(path), kwargs)
         fps = int(info.get("video_fps", 0))
         if fps <= 0:
             raise ValueError(f"Invalid fps={fps} for video: {path}")
@@ -699,7 +858,104 @@ class LabeledVideoDataset(Dataset):
 
         return batch_kpts, labels, mapped_t
 
+    def _getitem_segment(self, index: int) -> Dict[str, Any]:
+        segment = self._segment_index[index]
+        item = segment["item"]
+        fps = self._get_fps_cached(item.videos["front"])
+        chunk_abs_start = int(segment["start_frame_offset"]) + int(
+            segment["chunk_start_frame"]
+        )
+        if segment["chunk_end_frame"] is not None:
+            chunk_abs_end = int(segment["start_frame_offset"]) + int(
+                segment["chunk_end_frame"]
+            )
+        else:
+            chunk_abs_end = int(segment["segment_abs_end"])
+        chunk_start_sec = chunk_abs_start / fps
+        chunk_end_sec = chunk_abs_end / fps
+        segment_rel_start = max(0, int(segment["segment_abs_start"]) - chunk_abs_start)
+        segment_rel_end = max(segment_rel_start, int(segment["segment_abs_end"]) - chunk_abs_start)
+        requested_views = set(self.view_name)
+
+        video_out: Optional[Dict[str, torch.Tensor]] = None
+        if self.load_rgb:
+            loaded_views = {}
+            for view_name in ["front", "left", "right"]:
+                if view_name not in requested_views:
+                    continue
+                frames, _ = self._load_one_view(
+                    item.videos[view_name],
+                    chunk_start_sec,
+                    chunk_end_sec,
+                )
+                segment_frames = frames[segment_rel_start:segment_rel_end]
+                loaded_views[view_name] = self._apply_transform(segment_frames).permute(
+                    1, 0, 2, 3
+                )
+            video_out = {view: loaded_views[view] for view in self.view_name}
+
+        kpt_out: Optional[Dict[str, torch.Tensor]] = None
+        if self.load_kpt:
+            kpt_out = {}
+            for view_name in self.view_name:
+                kpt_dir = (
+                    item.sam3d_kpts.get(view_name)
+                    if item.sam3d_kpts is not None
+                    else None
+                )
+                kpts = self._load_sam3d_body_kpts(
+                    kpt_dir,
+                    start_frame=int(segment["segment_abs_start"]),
+                    end_frame=int(segment["segment_abs_end"]),
+                )
+                if kpts is not None:
+                    kpt_out[view_name] = self._apply_kpt_transform(kpts)
+            if not kpt_out:
+                raise RuntimeError(
+                    f"No keypoint segment found for source_index={segment['source_index']} "
+                    f"(person={item.person_id}, env={item.env_folder})."
+                )
+
+        label_name = str(segment["label"])
+        mapped_label = torch.tensor(self._label_to_id[label_name], dtype=torch.long)
+
+        return {
+            "video": video_out,
+            "sam3d_kpt": kpt_out,
+            "label": mapped_label,
+            "label_info": label_name,
+            "meta": {
+                "experiment": self._experiment,
+                "index": int(segment["source_index"]),
+                "person_id": item.person_id,
+                "env_folder": item.env_folder,
+                "env_key": item.env_key,
+                "start_frame": int(segment["segment_start_frame"]),
+                "end_frame": int(segment["segment_end_frame"]),
+                "fps": fps,
+                "is_chunked": self.max_video_frames is not None,
+                "segment_idx": int(segment["segment_idx"]),
+                "segment_count": int(segment["segment_count"]),
+                "chunk_info": {
+                    "chunk_idx": int(segment["chunk_idx"]),
+                    "total_chunks": int(segment["total_chunks"]),
+                    "chunk_start_frame": int(segment["chunk_start_frame"]),
+                    "chunk_end_frame": segment["chunk_end_frame"],
+                    "absolute_start_frame": int(segment["segment_abs_start"]),
+                    "absolute_end_frame": int(segment["segment_abs_end"]),
+                    "annotation_start": int(segment["start_frame_offset"]),
+                    "segment_idx": int(segment["segment_idx"]),
+                    "segment_count": int(segment["segment_count"]),
+                }
+                if self.max_video_frames is not None
+                else None,
+            },
+        }
+
     def __getitem__(self, index: int) -> Dict[str, Any]:
+        if self.batch_unit == "segment":
+            return self._getitem_segment(index)
+
         source_index = self._valid_source_indices[index]
         # Handle chunked vs non-chunked index
         if self.max_video_frames is not None:
@@ -1070,6 +1326,7 @@ def whole_video_dataset(
     view_name: List[str] = ["front", "left", "right"],
     annotator_id: Optional[int] = None,
     kpt_temporal_subsample_num: int = 8,
+    batch_unit: str = "chunk",
 ) -> LabeledVideoDataset:
     """
     Create a LabeledVideoDataset for whole video processing.
@@ -1102,4 +1359,5 @@ def whole_video_dataset(
         view_name=view_name,
         annotator_id=annotator_id,
         kpt_temporal_subsample_num=kpt_temporal_subsample_num,
+        batch_unit=batch_unit,
     )

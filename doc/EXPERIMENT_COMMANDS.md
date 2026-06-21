@@ -50,23 +50,37 @@ train.max_epochs=1 data.fold=1 data.num_workers=0 data.batch_size=1
 
 ## 0. Smoke Runs
 
-The experiment matrix script runs the same commands with dual GPUs and a larger
-default batch size:
+The experiment matrix script runs single-GPU training processes across both
+available GPUs. By default it starts two background workers: one pinned to GPU 0
+and one pinned to GPU 1. Each worker runs its assigned experiments sequentially.
 
 ```bash
-# Defaults: train.gpu=[0,1], data.batch_size=2, data.num_workers=12
+# Defaults: GPU_SLOTS="0 1", data.batch_size=16, train.accumulate_grad_batches=1,
+# train.precision=16-mixed, data.num_workers=2, data.val_num_workers=1,
+# data.test_num_workers=1, data.prefetch_factor=1
 scripts/run_experiment_matrix.sh smoke
 
 # Print commands without running them
 DRY_RUN=1 scripts/run_experiment_matrix.sh all
 
 # Override defaults
-BATCH_SIZE=4 MAX_EPOCHS=80 scripts/run_experiment_matrix.sh fusion
-GPU_IDS='[0]' BATCH_SIZE=1 scripts/run_experiment_matrix.sh smoke
+BATCH_SIZE=24 ACCUMULATE_GRAD_BATCHES=1 MAX_EPOCHS=80 scripts/run_experiment_matrix.sh fusion
+GPU_SLOTS='0' BATCH_SIZE=1 scripts/run_experiment_matrix.sh smoke
+GPU_SLOTS='0 1' BATCH_SIZE=16 ACCUMULATE_GRAD_BATCHES=1 scripts/run_experiment_matrix.sh all
 ```
 
 Supported stages are `smoke`, `single_view`, `modality`, `backbone`, `fusion`,
 `late_backbone`, `ts_cva`, and `all`.
+
+If PyAV raises `BlockingIOError: Resource temporarily unavailable` during video
+decoding, reduce concurrent decoding first:
+
+```bash
+NUM_WORKERS=1 VAL_NUM_WORKERS=0 TEST_NUM_WORKERS=0 PREFETCH_FACTOR=1 scripts/run_experiment_matrix.sh smoke
+```
+
+With `data.batch_unit=segment`, `data.batch_size` is the true model batch size.
+If CUDA OOM appears, first lower `BATCH_SIZE`, then reduce `data.img_size`.
 
 Single-view RGB smoke run:
 

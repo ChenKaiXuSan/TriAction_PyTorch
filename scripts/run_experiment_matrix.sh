@@ -4,27 +4,57 @@ set -euo pipefail
 STAGE="${1:-all}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 CONDA_ENV="${CONDA_ENV:-drivefusion}"
-GPU_IDS="${GPU_IDS:-[0,1]}"
-BATCH_SIZE="${BATCH_SIZE:-32}"
-NUM_WORKERS="${NUM_WORKERS:-16}"
+GPU_SLOTS="${GPU_SLOTS:-0 1}"
+BATCH_SIZE="${BATCH_SIZE:-16}"
+ACCUMULATE_GRAD_BATCHES="${ACCUMULATE_GRAD_BATCHES:-1}"
+PRECISION="${PRECISION:-16-mixed}"
+NUM_WORKERS="${NUM_WORKERS:-2}"
+VAL_NUM_WORKERS="${VAL_NUM_WORKERS:-1}"
+TEST_NUM_WORKERS="${TEST_NUM_WORKERS:-1}"
+PREFETCH_FACTOR="${PREFETCH_FACTOR:-1}"
 MAX_EPOCHS="${MAX_EPOCHS:-50}"
 FOLD="${FOLD:-2}"
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
 
+# Run one single-GPU process per slot. With the default "0 1", two worker
+# processes are launched and each worker runs its assigned experiments in order.
+read -r -a GPU_SLOT_LIST <<< "${GPU_SLOTS}"
+if [[ "${#GPU_SLOT_LIST[@]}" -eq 0 ]]; then
+  echo "GPU_SLOTS must contain at least one GPU id, for example: GPU_SLOTS='0 1'" >&2
+  exit 2
+fi
+
+QUEUE_DIR="$(mktemp -d /tmp/triaction_matrix.XXXXXX)"
+LOG_ROOT="${LOG_ROOT:-logs/experiment_matrix/$(date +%Y%m%d_%H%M%S)}"
+JOB_COUNT=0
+
+cleanup() {
+  rm -rf "${QUEUE_DIR}"
+}
+trap cleanup EXIT
+
 run_exp() {
   local exp_id="$1"
   shift
+  local slot_idx=$((JOB_COUNT % ${#GPU_SLOT_LIST[@]}))
+  local gpu_id="${GPU_SLOT_LIST[$slot_idx]}"
+  local queue_file="${QUEUE_DIR}/gpu_${gpu_id}.queue"
 
   echo
   echo "===== ${exp_id} ====="
-  echo "GPUs=${GPU_IDS} batch_size=${BATCH_SIZE} workers=${NUM_WORKERS} epochs=${MAX_EPOCHS} fold=${FOLD}"
+  echo "GPU=${gpu_id} batch_size=${BATCH_SIZE} accumulate=${ACCUMULATE_GRAD_BATCHES} precision=${PRECISION} workers=${NUM_WORKERS} val_workers=${VAL_NUM_WORKERS} test_workers=${TEST_NUM_WORKERS} prefetch=${PREFETCH_FACTOR} epochs=${MAX_EPOCHS} fold=${FOLD}"
 
   local cmd=(
     conda run -n "${CONDA_ENV}" "${PYTHON_BIN}" -m project.main
-    "train.gpu=${GPU_IDS}" \
+    "train.gpu=[${gpu_id}]" \
     "data.batch_size=${BATCH_SIZE}" \
     "data.num_workers=${NUM_WORKERS}" \
+    "data.val_num_workers=${VAL_NUM_WORKERS}" \
+    "data.test_num_workers=${TEST_NUM_WORKERS}" \
+    "data.prefetch_factor=${PREFETCH_FACTOR}" \
     "train.max_epochs=${MAX_EPOCHS}" \
+    "train.precision=${PRECISION}" \
+    "train.accumulate_grad_batches=${ACCUMULATE_GRAD_BATCHES}" \
     "data.fold=${FOLD}" \
     experiment="${exp_id}" \
     "$@"
@@ -39,17 +69,70 @@ run_exp() {
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
     printf '%q ' "${cmd[@]}"
     echo
+    JOB_COUNT=$((JOB_COUNT + 1))
     return 0
   fi
 
-  "${cmd[@]}"
+  printf '%q ' "${cmd[@]}" >> "${queue_file}"
+  echo >> "${queue_file}"
+  JOB_COUNT=$((JOB_COUNT + 1))
+}
+
+dispatch_queues() {
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  if [[ "${JOB_COUNT}" -eq 0 ]]; then
+    echo "No experiments selected."
+    return 0
+  fi
+
+  mkdir -p "${LOG_ROOT}"
+  echo
+  echo "Queued ${JOB_COUNT} experiments across ${#GPU_SLOT_LIST[@]} GPU worker(s)."
+  echo "Logs: ${LOG_ROOT}"
+
+  local pids=()
+  local gpu_id
+  for gpu_id in "${GPU_SLOT_LIST[@]}"; do
+    local queue_file="${QUEUE_DIR}/gpu_${gpu_id}.queue"
+    [[ -s "${queue_file}" ]] || continue
+
+    local log_file="${LOG_ROOT}/gpu_${gpu_id}.log"
+    (
+      set -euo pipefail
+      while IFS= read -r cmdline; do
+        echo
+        echo "===== GPU ${gpu_id}: ${cmdline} ====="
+        eval "${cmdline}"
+      done < "${queue_file}"
+    ) > "${log_file}" 2>&1 &
+    pids+=("$!")
+    echo "GPU ${gpu_id} worker started: pid=$! log=${log_file}"
+  done
+
+  local status=0
+  local pid
+  for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+      status=1
+    fi
+  done
+
+  if [[ "${status}" -ne 0 ]]; then
+    echo "At least one GPU worker failed. Check logs under ${LOG_ROOT}." >&2
+    return "${status}"
+  fi
+
+  echo "All experiment workers finished."
 }
 
 run_smoke() {
   local old_batch_size="${BATCH_SIZE}"
   local old_epochs="${MAX_EPOCHS}"
   local old_fold="${FOLD}"
-  BATCH_SIZE="${SMOKE_BATCH_SIZE:-2}"
+  BATCH_SIZE="${SMOKE_BATCH_SIZE:-4}"
   MAX_EPOCHS="${SMOKE_MAX_EPOCHS:-1}"
   FOLD="${SMOKE_FOLD:-1}"
   run_exp "S0_smoke_single_front_rgb_3dcnn" \
@@ -209,3 +292,5 @@ case "${STAGE}" in
     exit 2
     ;;
 esac
+
+dispatch_queues

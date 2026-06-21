@@ -39,12 +39,18 @@ paths:
   sam3d_results_path: /home/data/xchen/drive/sam3d_body_results_right
 
 data:
-  num_workers: 12
+  num_workers: 2
+  val_num_workers: 1 # validation runs during Lightning sanity check; keep decode concurrency conservative
+  test_num_workers: 1
+  prefetch_factor: 1 # lower video decode concurrency; useful for PyAV/ffmpeg stability
   img_size: 224
 
   uniform_temporal_subsample_num: 8 # num frame from the clip duration, f or define one gait cycle, we need use whole frames.
 
-  batch_size: 64 # load video number
+  batch_unit: segment # segment | chunk; segment makes data.batch_size the true model batch size
+  segment_grouped_shuffle: true # shuffle chunks, keep same-chunk segments adjacent for video cache reuse
+  segment_shuffle_seed: 42
+  batch_size: 16 # segment batch size when batch_unit=segment
 
   # fold: 5 # the fold number of the cross validation
   fold: 2 # the fold number of the cross validation, for 5-class setting, we use fold 0-4; for 3-class setting, we
@@ -97,6 +103,11 @@ model:
 train:
   # Training config
   max_epochs: 50 # numer of epochs of training
+  precision: 16-mixed # reduce 3D CNN activation memory on RTX 3090
+  accumulate_grad_batches: 1 # effective segment batch = data.batch_size * accumulate_grad_batches
+  limit_train_batches: 1.0 # set to 1 for quick smoke/debug runs
+  limit_val_batches: 1.0
+  limit_test_batches: 1.0
 
   view: single # single or multi
   view_name: ['front'] # used for train view, choices=['front', 'left', 'right']

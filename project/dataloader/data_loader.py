@@ -20,10 +20,12 @@ Date      	By	Comments
 ----------	---	---------------------------------------------------------
 """
 
-from typing import Any, Callable, Dict, Optional
+import random
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 import torch
 from pytorch_lightning import LightningDataModule
+from torch.utils.data import Sampler
 from torch.utils.data import DataLoader
 from torchvision.transforms import (
     Compose,
@@ -38,11 +40,54 @@ from project.dataloader.utils import (
 )
 
 
+class SegmentGroupedSampler(Sampler[int]):
+    """Shuffle segment chunks while keeping segments from the same chunk adjacent."""
+
+    def __init__(self, dataset, seed: int = 0, shuffle: bool = True):
+        self.dataset = dataset
+        self.seed = int(seed)
+        self.shuffle = bool(shuffle)
+        self.epoch = 0
+        self.groups: List[List[int]] = []
+
+        current_key = None
+        current_group: List[int] = []
+        for index, segment in enumerate(getattr(dataset, "_segment_index", [])):
+            key = segment.get("source_index")
+            if current_key is None or key == current_key:
+                current_group.append(index)
+            else:
+                self.groups.append(current_group)
+                current_group = [index]
+            current_key = key
+        if current_group:
+            self.groups.append(current_group)
+
+    def __iter__(self) -> Iterator[int]:
+        groups = [list(group) for group in self.groups]
+        if self.shuffle:
+            rng = random.Random(self.seed + self.epoch)
+            rng.shuffle(groups)
+        self.epoch += 1
+        for group in groups:
+            yield from group
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+
 class DriverDataModule(LightningDataModule):
     def __init__(self, opt, dataset_idx: Dict = None):
         super().__init__()
 
-        self._num_workers = opt.data.num_workers
+        self._num_workers = int(opt.data.num_workers)
+        self._val_num_workers = int(
+            getattr(opt.data, "val_num_workers", self._num_workers)
+        )
+        self._test_num_workers = int(
+            getattr(opt.data, "test_num_workers", self._val_num_workers)
+        )
+        self._prefetch_factor = int(getattr(opt.data, "prefetch_factor", 1))
         self._img_size = opt.data.img_size
 
         # frame rate
@@ -60,6 +105,11 @@ class DriverDataModule(LightningDataModule):
 
         self._batch_size = opt.data.batch_size
         self.max_video_frames = opt.data.max_video_frames
+        self.batch_unit = getattr(opt.data, "batch_unit", "chunk")
+        self.segment_grouped_shuffle = bool(
+            getattr(opt.data, "segment_grouped_shuffle", True)
+        )
+        self.segment_shuffle_seed = int(getattr(opt.data, "segment_shuffle_seed", 42))
         self.view_name = opt.train.view_name
         if isinstance(self.view_name, str):
             self.view_name = [self.view_name]
@@ -104,6 +154,7 @@ class DriverDataModule(LightningDataModule):
             annotation_dict=_annotation_dict,
             transform=self.mapping_transform,
             max_video_frames=self.max_video_frames,
+            batch_unit=self.batch_unit,
             view_name=self.view_name,
             load_rgb=self.load_rgb,
             load_kpt=self.load_kpt,
@@ -117,6 +168,7 @@ class DriverDataModule(LightningDataModule):
             annotation_dict=_annotation_dict,
             transform=self.mapping_transform,
             max_video_frames=self.max_video_frames,
+            batch_unit=self.batch_unit,
             view_name=self.view_name,
             load_rgb=self.load_rgb,
             load_kpt=self.load_kpt,
@@ -130,6 +182,7 @@ class DriverDataModule(LightningDataModule):
             annotation_dict=_annotation_dict,
             transform=self.mapping_transform,
             max_video_frames=self.max_video_frames,
+            batch_unit=self.batch_unit,
             view_name=self.view_name,
             load_rgb=self.load_rgb,
             load_kpt=self.load_kpt,
@@ -162,34 +215,45 @@ class DriverDataModule(LightningDataModule):
 
             sample_label_info = sample.get("label_info", [])
             if sample_label_info:
-                label_info.extend(sample_label_info)
+                if isinstance(sample_label_info, list):
+                    label_info.extend(sample_label_info)
+                else:
+                    label_info.append(sample_label_info)
 
             seg_count = int(sample_labels.shape[0])
             sample_meta = sample.get("meta")
             if sample_meta is not None:
                 for seg_idx in range(seg_count):
                     meta_entry = dict(sample_meta)
-                    meta_entry["segment_idx"] = seg_idx
-                    meta_entry["segment_count"] = seg_count
+                    if sample_labels.ndim > 0 and seg_count > 1:
+                        meta_entry["segment_idx"] = seg_idx
+                        meta_entry["segment_count"] = seg_count
                     meta.append(meta_entry)
                     if sample_meta.get("chunk_info") is not None:
                         chunk_entry = dict(sample_meta["chunk_info"])
-                        chunk_entry["segment_idx"] = seg_idx
-                        chunk_entry["segment_count"] = seg_count
+                        if sample_labels.ndim > 0 and seg_count > 1:
+                            chunk_entry["segment_idx"] = seg_idx
+                            chunk_entry["segment_count"] = seg_count
                         chunk_info.append(chunk_entry)
 
             sample_videos = sample.get("video")
             if isinstance(sample_videos, dict):
                 for view in views:
                     if sample_videos.get(view) is not None:
-                        video_lists[view].append(sample_videos[view])
+                        video_tensor = sample_videos[view]
+                        if video_tensor.ndim == 4:
+                            video_tensor = video_tensor.unsqueeze(0)
+                        video_lists[view].append(video_tensor)
                         has_video = True
 
             sample_kpts = sample.get("sam3d_kpt")
             if isinstance(sample_kpts, dict):
                 for view in views:
                     if sample_kpts.get(view) is not None:
-                        kpt_lists[view].append(sample_kpts[view])
+                        kpt_tensor = sample_kpts[view]
+                        if kpt_tensor.ndim == 3:
+                            kpt_tensor = kpt_tensor.unsqueeze(0)
+                        kpt_lists[view].append(kpt_tensor)
                         has_kpt = True
 
         label_tensor = (
@@ -223,6 +287,15 @@ class DriverDataModule(LightningDataModule):
             "chunk_info": chunk_info,
         }
 
+    def _worker_kwargs(self, num_workers: Optional[int] = None) -> Dict[str, Any]:
+        worker_count = self._num_workers if num_workers is None else int(num_workers)
+        if worker_count <= 0:
+            return {}
+        return {
+            "persistent_workers": True,
+            "prefetch_factor": self._prefetch_factor,
+        }
+
     def train_dataloader(self) -> DataLoader:
         """
         create the Walk train partition from the list of video labels
@@ -230,15 +303,26 @@ class DriverDataModule(LightningDataModule):
         normalizes the video before applying the scale, crop and flip augmentations.
         """
 
+        sampler = None
+        shuffle = True
+        if self.batch_unit == "segment" and self.segment_grouped_shuffle:
+            sampler = SegmentGroupedSampler(
+                self.train_gait_dataset,
+                seed=self.segment_shuffle_seed,
+                shuffle=True,
+            )
+            shuffle = False
+
         train_data_loader = DataLoader(
             self.train_gait_dataset,
             batch_size=self._batch_size,
             num_workers=self._num_workers,
             pin_memory=True,
-            shuffle=True,
+            shuffle=shuffle,
+            sampler=sampler,
             drop_last=True,
-            persistent_workers=True,
             collate_fn=self._collate_fn,
+            **self._worker_kwargs(self._num_workers),
         )
 
         return train_data_loader
@@ -253,12 +337,12 @@ class DriverDataModule(LightningDataModule):
         val_data_loader = DataLoader(
             self.val_gait_dataset,
             batch_size=self._batch_size,
-            num_workers=self._num_workers,
+            num_workers=self._val_num_workers,
             pin_memory=True,
             shuffle=False,
             drop_last=True,
-            persistent_workers=True,
             collate_fn=self._collate_fn,
+            **self._worker_kwargs(self._val_num_workers),
         )
 
         return val_data_loader
@@ -273,12 +357,12 @@ class DriverDataModule(LightningDataModule):
         test_data_loader = DataLoader(
             self.test_gait_dataset,
             batch_size=self._batch_size,
-            num_workers=self._num_workers,
+            num_workers=self._test_num_workers,
             pin_memory=True,
             shuffle=False,
             drop_last=True,
-            persistent_workers=True,
             collate_fn=self._collate_fn,
+            **self._worker_kwargs(self._test_num_workers),
         )
 
         return test_data_loader

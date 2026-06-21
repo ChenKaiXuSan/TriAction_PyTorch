@@ -134,6 +134,13 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
         devices=parse_train_devices(hparams.train.gpu),
         accelerator="gpu",
         max_epochs=hparams.train.max_epochs,
+        precision=getattr(hparams.train, "precision", "32-true"),
+        accumulate_grad_batches=int(
+            getattr(hparams.train, "accumulate_grad_batches", 1)
+        ),
+        limit_train_batches=getattr(hparams.train, "limit_train_batches", 1.0),
+        limit_val_batches=getattr(hparams.train, "limit_val_batches", 1.0),
+        limit_test_batches=getattr(hparams.train, "limit_test_batches", 1.0),
         logger=[tb_logger, csv_logger],
         check_val_every_n_epoch=1,
         callbacks=[
@@ -144,9 +151,6 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
             lr_monitor,
             DeviceStatsMonitor(),  # monitor the device stats.
         ],
-        # limit_train_batches=1,
-        # limit_val_batches=1,
-        # limit_test_batches=1,
     )
 
     trainer.fit(classification_module, data_module)
