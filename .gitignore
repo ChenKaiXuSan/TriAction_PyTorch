@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Local data and experiment outputs
+data/
+logs/
+outputs/
+lightning_logs/
+wandb/
+multirun/
+.hydra/
+
+# Model artifacts
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# Codex/superpowers working plans
+docs/superpowers/plans/
