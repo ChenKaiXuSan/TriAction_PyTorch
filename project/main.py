@@ -22,9 +22,14 @@ Date      	By	Comments
 
 import logging
 import os
+from typing import Any, List
+
+os.environ.setdefault("NCCL_P2P_DISABLE", "1")
+# os.environ.setdefault('NCCL_SHM_DISABLE', '1')
 
 import hydra
 from omegaconf import DictConfig
+from omegaconf.listconfig import ListConfig
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import (
     DeviceStatsMonitor,
@@ -34,7 +39,7 @@ from pytorch_lightning.callbacks import (
     RichModelSummary,
     TQDMProgressBar,
 )
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 
 from project.cross_validation import DefineCrossValidation
 from project.dataloader.data_loader import DriverDataModule
@@ -46,6 +51,23 @@ from project.trainer.multi_selector import build_multi_trainer
 from project.trainer.single_selector import build_single_trainer
 
 logger = logging.getLogger(__name__)
+
+
+def parse_train_devices(gpu_config: Any) -> List[int]:
+    """Parse train.gpu while keeping backward compatibility with int configs."""
+    if isinstance(gpu_config, int):
+        return [gpu_config]
+
+    if isinstance(gpu_config, (list, tuple, ListConfig)):
+        return [int(device) for device in gpu_config]
+
+    if isinstance(gpu_config, str):
+        value = gpu_config.strip()
+        if value.startswith("[") and value.endswith("]"):
+            value = value[1:-1]
+        return [int(device.strip()) for device in value.split(",") if device.strip()]
+
+    return [int(gpu_config)]
 
 
 def train(hparams: DictConfig, dataset_idx, fold: int):
@@ -79,6 +101,10 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
         save_dir=os.path.join(hparams.log_path, "tb_logs"),
         name="fold_" + str(fold),  # here should be str type.
     )
+    csv_logger = CSVLogger(
+        save_dir=os.path.join(hparams.log_path, "csv_logs"),
+        name="fold_" + str(fold),  # here should be str type.
+    )
 
     # some callbacks
     rich_model_summary = RichModelSummary(max_depth=2)
@@ -105,12 +131,10 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
     trainer = Trainer(
-        devices=[
-            int(hparams.train.gpu),
-        ],
+        devices=parse_train_devices(hparams.train.gpu),
         accelerator="gpu",
         max_epochs=hparams.train.max_epochs,
-        logger=[tb_logger],
+        logger=[tb_logger, csv_logger],
         check_val_every_n_epoch=1,
         callbacks=[
             progress_bar,

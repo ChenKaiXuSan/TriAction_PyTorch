@@ -29,14 +29,14 @@ loss:
     front: 0.2
 
 paths:
-  root_path: /workspace/data/multi_view_driver_action
+  root_path: /home/data/xchen/drive/multi_view_driver_action
 
   annotation_path: ${paths.root_path}/label
   index_mapping: ${paths.root_path}/index_mapping # training mapping path, this used for cross validation, with different class number.
   start_mid_end_path: ${paths.root_path}/split_mid_end/mini.json # 我们不需要推导左右的frame，按照这里面的start和mid来进行推导
 
-  video_path: /workspace/data/videos_split
-  sam3d_results_path: /workspace/data/sam3d_body_results_right
+  video_path: /home/data/xchen/drive/videos_split
+  sam3d_results_path: /home/data/xchen/drive/sam3d_body_results_right
 
 data:
   num_workers: 12
@@ -44,10 +44,10 @@ data:
 
   uniform_temporal_subsample_num: 8 # num frame from the clip duration, f or define one gait cycle, we need use whole frames.
 
-  batch_size: 1 # load video number
+  batch_size: 64 # load video number
 
   # fold: 5 # the fold number of the cross validation
-  fold: 10
+  fold: 2 # the fold number of the cross validation, for 5-class setting, we use fold 0-4; for 3-class setting, we
 
   magic_move: true              # 是否启用 magic_move
   magic_move_ratio: 0.1         # 比例（默认 0.1 = 10%）
@@ -101,7 +101,7 @@ train:
   view: single # single or multi
   view_name: ['front'] # used for train view, choices=['front', 'left', 'right']
 
-  gpu: 0 # choices=[0, 1], help='the gpu number whicht to train'
+  gpu: [0, 1] # GPU ids used by PyTorch Lightning; set 0 for single-GPU runs
 
 log_path: logs/train/${experiment}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 experiment: ${train.view}_${train.view_name}_${model.backbone}_fuse_method_${model.fuse_method} # the experiment name, used for log path

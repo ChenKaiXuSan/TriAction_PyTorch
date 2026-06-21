@@ -84,26 +84,26 @@ version.
 Run the default experiment:
 
 ```bash
-python project/main.py
+python -m project.main
 ```
 
 Common Hydra overrides:
 
 ```bash
 # Single-view RGB 3D CNN on the front camera
-python project/main.py train.view=single train.view_name='[front]' model.input_type=rgb model.backbone=3dcnn
+python -m project.main train.view=single train.view_name='[front]' model.input_type=rgb model.backbone=3dcnn
 
 # Single-view keypoint model
-python project/main.py train.view=single train.view_name='[right]' model.input_type=kpt
+python -m project.main train.view=single train.view_name='[right]' model.input_type=kpt
 
 # Single-view RGB + keypoint model
-python project/main.py train.view=single train.view_name='[front]' model.input_type=rgb_kpt model.backbone=3dcnn
+python -m project.main train.view=single train.view_name='[front]' model.input_type=rgb_kpt model.backbone=3dcnn
 
 # Multi-view mid-fusion RGB training
-python project/main.py train.view=multi train.view_name='[front,left,right]' model.input_type=rgb model.backbone=3dcnn model.fuse_method=mid
+python -m project.main train.view=multi train.view_name='[front,left,right]' model.input_type=rgb model.backbone=3dcnn model.fuse_method=mid
 
 # Late fusion with a Transformer backbone
-python project/main.py train.view=multi train.view_name='[front,left,right]' model.input_type=rgb model.backbone=transformer model.fuse_method=late
+python -m project.main train.view=multi train.view_name='[front,left,right]' model.input_type=rgb model.backbone=transformer model.fuse_method=late
 ```
 
 Logs and checkpoints are written under `logs/` by default and are intentionally
