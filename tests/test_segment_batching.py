@@ -1,6 +1,8 @@
 from pathlib import Path
+import tempfile
 import unittest
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -127,6 +129,32 @@ class SegmentBatchingTests(unittest.TestCase):
         source_indices = [dataset._segment_index[i]["source_index"] for i in indices]
 
         self.assertEqual(source_indices, [0, 0, 0, 0, 1, 1, 1, 1])
+
+    def test_sam3d_loader_uses_absolute_frame_filenames_and_output_payload(self):
+        dataset = FakeSegmentDataset(
+            experiment="test",
+            index_mapping=[self._sample()],
+            annotation_dict={"01": {"昼多い": {"start": 0, "end": 10}}},
+            transform=lambda frames: frames[:2],
+            max_video_frames=10,
+            view_name=["front"],
+            batch_unit="segment",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kpt_dir = Path(tmp_dir)
+            for frame_idx in range(150, 155):
+                keypoints = np.full((2, 3), frame_idx, dtype=np.float32)
+                np.savez(
+                    kpt_dir / f"{frame_idx:06d}_sam3d_body.npz",
+                    output=np.array({"pred_keypoints_3d": keypoints}, dtype=object),
+                )
+
+            kpts = dataset._load_sam3d_body_kpts(kpt_dir, start_frame=152, end_frame=154)
+
+        self.assertIsNotNone(kpts)
+        self.assertEqual(tuple(kpts.shape), (2, 2, 3))
+        self.assertEqual(kpts[:, 0, 0].tolist(), [152.0, 153.0])
 
 
 if __name__ == "__main__":

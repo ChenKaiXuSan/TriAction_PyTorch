@@ -552,8 +552,21 @@ class LabeledVideoDataset(Dataset):
         if end_frame is not None:
             desired_len = max(0, int(end_frame) - int(start_frame))
 
-        if end_frame is not None and int(end_frame) <= len(files):
-            selected_files = files[int(start_frame): int(end_frame)]
+        numbered_files = []
+        for file_path in files:
+            frame_token = file_path.stem.split("_", 1)[0]
+            if frame_token.isdigit():
+                numbered_files.append((int(frame_token), file_path))
+
+        if numbered_files:
+            selected_files = [
+                file_path
+                for frame_idx, file_path in numbered_files
+                if frame_idx >= int(start_frame)
+                and (end_frame is None or frame_idx < int(end_frame))
+            ]
+        elif end_frame is not None and int(end_frame) <= len(files):
+            selected_files = files[int(start_frame) : int(end_frame)]
         elif desired_len is not None:
             selected_files = files[:desired_len]
         else:
@@ -562,15 +575,45 @@ class LabeledVideoDataset(Dataset):
         kpt_frames: List[torch.Tensor] = []
         for npz_path in selected_files:
             try:
-                with np.load(npz_path, allow_pickle=False) as data:
+                with np.load(npz_path, allow_pickle=True) as data:
                     key = None
-                    for candidate in ("keypoints_3d", "poses", "keypoints", "arr_0"):
+                    for candidate in (
+                        "keypoints_3d",
+                        "pred_keypoints_3d",
+                        "pred_joint_coords",
+                        "poses",
+                        "keypoints",
+                        "arr_0",
+                    ):
                         if candidate in data:
                             key = candidate
                             break
-                    if key is None:
+                    if key is not None:
+                        arr = np.asarray(data[key], dtype=np.float32)
+                    elif "output" in data:
+                        output = data["output"]
+                        if isinstance(output, np.ndarray):
+                            if output.shape == ():
+                                output = output.item()
+                            elif output.dtype == object and output.size > 0:
+                                output = output.flat[0]
+                        if not isinstance(output, dict):
+                            continue
+                        output_key = None
+                        for candidate in (
+                            "pred_keypoints_3d",
+                            "pred_joint_coords",
+                            "keypoints_3d",
+                            "keypoints",
+                        ):
+                            if candidate in output:
+                                output_key = candidate
+                                break
+                        if output_key is None:
+                            continue
+                        arr = np.asarray(output[output_key], dtype=np.float32)
+                    else:
                         continue
-                    arr = np.asarray(data[key], dtype=np.float32)
             except Exception as exc:
                 logger.warning("Failed to load SAM3D keypoints from %s: %s", npz_path, exc)
                 continue
