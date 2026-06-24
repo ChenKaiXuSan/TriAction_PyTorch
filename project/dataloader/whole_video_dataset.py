@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, List, Tuple
 import numpy as np
 from collections import OrderedDict
+from bisect import bisect_left
 
 import torch
 from torch.utils.data import Dataset
@@ -93,6 +94,7 @@ class LabeledVideoDataset(Dataset):
         # Label cache + valid index mapping (for proper shuffle with unlabeled skip)
         self._label_cache: Dict[str, Dict[str, Any]] = {}
         self._valid_source_indices: List[int] = []
+        self._kpt_file_cache: Dict[str, Tuple[List[Path], List[int]]] = {}
 
         # Build chunked index if max_video_frames is set
         if self.max_video_frames is not None:
@@ -403,8 +405,25 @@ class LabeledVideoDataset(Dataset):
                     continue
                 valid_segments.append((seg, label))
 
-            segment_count = len(valid_segments)
-            for segment_idx, (seg, label) in enumerate(valid_segments):
+            segment_records = []
+            for seg, label in valid_segments:
+                segment_abs_start = loaded_abs_start + int(seg["start"])
+                segment_abs_end = loaded_abs_start + int(seg["end"])
+                if self.load_kpt and not self._has_requested_kpt_coverage(
+                    item,
+                    segment_abs_start,
+                    segment_abs_end,
+                ):
+                    continue
+                segment_records.append((seg, label, segment_abs_start, segment_abs_end))
+
+            segment_count = len(segment_records)
+            for segment_idx, (
+                seg,
+                label,
+                segment_abs_start,
+                segment_abs_end,
+            ) in enumerate(segment_records):
                 self._segment_index.append(
                     {
                         **context,
@@ -413,11 +432,65 @@ class LabeledVideoDataset(Dataset):
                         "segment_count": segment_count,
                         "segment_start_frame": int(seg["start"]),
                         "segment_end_frame": int(seg["end"]),
-                        "segment_abs_start": loaded_abs_start + int(seg["start"]),
-                        "segment_abs_end": loaded_abs_start + int(seg["end"]),
+                        "segment_abs_start": segment_abs_start,
+                        "segment_abs_end": segment_abs_end,
                         "label": label,
                     }
                 )
+
+    def _get_sam3d_file_index(self, sam3d_dir: Optional[Path]) -> Tuple[List[Path], List[int]]:
+        if sam3d_dir is None or not Path(sam3d_dir).exists():
+            return [], []
+
+        dir_key = str(sam3d_dir)
+        if dir_key not in self._kpt_file_cache:
+            files = sorted(Path(sam3d_dir).glob("*.npz"))
+            frame_numbers = []
+            for file_path in files:
+                frame_token = file_path.stem.split("_", 1)[0]
+                if frame_token.isdigit():
+                    frame_numbers.append(int(frame_token))
+            self._kpt_file_cache[dir_key] = (files, frame_numbers)
+        return self._kpt_file_cache[dir_key]
+
+    def _has_sam3d_body_kpt_files(
+        self,
+        sam3d_dir: Optional[Path],
+        start_frame: int,
+        end_frame: Optional[int],
+    ) -> bool:
+        files, frame_numbers = self._get_sam3d_file_index(sam3d_dir)
+        if not files:
+            return False
+
+        if frame_numbers:
+            pos = bisect_left(frame_numbers, int(start_frame))
+            return pos < len(frame_numbers) and (
+                end_frame is None or frame_numbers[pos] < int(end_frame)
+            )
+
+        if end_frame is not None:
+            if int(end_frame) <= len(files):
+                return int(end_frame) > int(start_frame)
+            return max(0, int(end_frame) - int(start_frame)) > 0
+        return int(start_frame) < len(files)
+
+    def _has_requested_kpt_coverage(
+        self,
+        item: VideoSample,
+        start_frame: int,
+        end_frame: Optional[int],
+    ) -> bool:
+        if item.sam3d_kpts is None:
+            return False
+        for view_name in self.view_name:
+            if self._has_sam3d_body_kpt_files(
+                item.sam3d_kpts.get(view_name),
+                start_frame,
+                end_frame,
+            ):
+                return True
+        return False
 
     # ===== FPS Management =====
     def _get_fps_cached(self, path: Path) -> int:

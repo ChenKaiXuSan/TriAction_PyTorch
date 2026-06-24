@@ -52,6 +52,17 @@ class SegmentBatchingTests(unittest.TestCase):
             sam3d_kpts=None,
         )
 
+    def _sample_with_kpts(self, kpt_dir: Path):
+        sample = self._sample()
+        return VideoSample(
+            person_id=sample.person_id,
+            env_folder=sample.env_folder,
+            env_key=sample.env_key,
+            label_path=sample.label_path,
+            videos=sample.videos,
+            sam3d_kpts={"front": kpt_dir},
+        )
+
     def test_segment_mode_indexes_individual_labeled_segments(self):
         dataset = FakeSegmentDataset(
             experiment="test",
@@ -155,6 +166,34 @@ class SegmentBatchingTests(unittest.TestCase):
         self.assertIsNotNone(kpts)
         self.assertEqual(tuple(kpts.shape), (2, 2, 3))
         self.assertEqual(kpts[:, 0, 0].tolist(), [152.0, 153.0])
+
+    def test_segment_mode_filters_segments_without_requested_keypoints(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            kpt_dir = Path(tmp_dir)
+            for frame_idx in range(5, 8):
+                keypoints = np.full((2, 3), frame_idx, dtype=np.float32)
+                np.savez(
+                    kpt_dir / f"{frame_idx:06d}_sam3d_body.npz",
+                    output=np.array({"pred_keypoints_3d": keypoints}, dtype=object),
+                )
+
+            dataset = FakeSegmentDataset(
+                experiment="test",
+                index_mapping=[self._sample_with_kpts(kpt_dir)],
+                annotation_dict={"01": {"昼多い": {"start": 0, "end": 10}}},
+                transform=lambda frames: frames[:2],
+                max_video_frames=10,
+                view_name=["front"],
+                batch_unit="segment",
+                load_kpt=True,
+                kpt_temporal_subsample_num=2,
+            )
+
+            self.assertEqual(len(dataset), 1)
+            sample = dataset[0]
+
+        self.assertEqual(sample["label_info"], "right")
+        self.assertEqual(tuple(sample["sam3d_kpt"]["front"].shape), (2, 2, 3))
 
 
 if __name__ == "__main__":
