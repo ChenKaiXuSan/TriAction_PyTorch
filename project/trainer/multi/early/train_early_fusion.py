@@ -20,10 +20,9 @@ Date      	By	Comments
 ----------	---	---------------------------------------------------------
 """
 
-from typing import Any, List, Optional, Union
+from typing import Any, Dict
 
 import torch
-import torch.nn.functional as F
 
 from pytorch_lightning import LightningModule
 
@@ -44,12 +43,26 @@ class EarlyFusion3DCNNTrainer(LightningModule):
         super().__init__()
 
         self.img_size = hparams.data.img_size
-        self.lr = hparams.optimizer.lr
+        self.lr = float(getattr(hparams.loss, "lr", 1e-3))
         self.num_classes = hparams.model.model_class_num
+        self.input_type = getattr(hparams.model, "input_type", "rgb")
+        self.fuse_method = getattr(hparams.model, "fuse_method", "avg")
+        self.view_names = getattr(hparams.train, "view_name", ["front", "left", "right"])
+        if isinstance(self.view_names, str):
+            self.view_names = [self.view_names]
+        self.view_names = list(self.view_names)
+        self.num_views = len(self.view_names)
 
         # define model
-        self.stance_cnn = select_model(hparams)
-        self.swing_cnn = select_model(hparams)
+        self.view_cnns = torch.nn.ModuleDict(
+            {view: select_model(hparams) for view in self.view_names}
+        )
+        self.view_fusion_head = None
+        if self.fuse_method == "concat":
+            feature_dim = self._infer_feature_dim(next(iter(self.view_cnns.values())))
+            self.view_fusion_head = torch.nn.Linear(
+                feature_dim * self.num_views, self.num_classes
+            )
 
         # save the hyperparameters to the file and ckpt
         self.save_hyperparameters()
@@ -65,166 +78,83 @@ class EarlyFusion3DCNNTrainer(LightningModule):
         else:
             self.class_weights = None
 
-    def forward(self, x):
-        return self.video_cnn(x)
+    def forward(self, videos: Dict[str, torch.Tensor]) -> torch.Tensor:
+        if not isinstance(videos, dict):
+            raise TypeError("Early fusion expects batch['video'] to be a dict of views.")
 
-    def training_step(self, batch: torch.Tensor, batch_idx: int):
+        if self.fuse_method == "concat":
+            features = []
+            for view in self.view_names:
+                model = self.view_cnns[view]
+                if not hasattr(model, "forward_features"):
+                    raise ValueError(
+                        f"Selected model {type(model).__name__} does not support concat fusion."
+                    )
+                features.append(model.forward_features(videos[view]))
+            return self.view_fusion_head(torch.cat(features, dim=1))
 
-        stance_video = batch["video"][..., 0].detach()  # b, c, t, h, w
-        swing_video = batch["video"][..., 1].detach()  # b, c, t, h, w
-        # sample_info = batch["info"] # b is the video instance number
+        logits = [self.view_cnns[view](videos[view]) for view in self.view_names]
+        stacked_logits = torch.stack(logits, dim=0)
+        if self.fuse_method == "add":
+            return stacked_logits.sum(dim=0)
+        if self.fuse_method == "avg":
+            return stacked_logits.mean(dim=0)
+        if self.fuse_method == "mul":
+            probs = torch.softmax(stacked_logits, dim=-1).prod(dim=0)
+            return torch.log(torch.clamp(probs, min=1e-8))
+        raise ValueError(f"Unknown early-fusion method: {self.fuse_method}")
 
-        label = batch["label"]
+    @staticmethod
+    def _infer_feature_dim(model) -> int:
+        feature_dim = getattr(model, "feature_dim", None)
+        if feature_dim is None:
+            raise ValueError(
+                f"Selected model {type(model).__name__} lacks feature_dim for concat fusion."
+            )
+        return int(feature_dim)
 
-        # * slove OOM problem, cut the large batch, when >= 30
-        if stance_video.size()[0] + swing_video.size()[0] >= 30:
-            stance_preds = self.stance_cnn(stance_video[:14])
-            swing_preds = self.swing_cnn(swing_video[:14])
-            label = label[:14]
-        else:
-            stance_preds = self.stance_cnn(stance_video)
-            swing_preds = self.swing_cnn(swing_video)
+    def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
+        videos = batch["video"]
+        if videos is None:
+            raise ValueError("RGB videos are required for early fusion.")
+        videos = {view: videos[view].detach() for view in self.view_names}
+        label = batch["label"].view(-1)
 
-        # stance loss
-        stance_loss = weighted_cross_entropy(stance_preds, label, self.class_weights)
+        logits = self(videos)
+        loss = weighted_cross_entropy(logits, label, self.class_weights)
+        probs = torch.softmax(logits, dim=1)
 
-        # swing loss
-        swing_loss = weighted_cross_entropy(swing_preds, label, self.class_weights)
-
-        predict = (stance_preds + swing_preds) / 2
-        predict_softmax = torch.softmax(predict, dim=1)
-
-        # loss = F.cross_entropy(predict, label.long())
-        loss = (stance_loss + swing_loss) / 2
+        video_acc = self._accuracy(probs, label)
+        video_precision = self._precision(probs, label)
+        video_recall = self._recall(probs, label)
+        video_f1_score = self._f1_score(probs, label)
+        _ = self._confusion_matrix(probs, label)
 
         self.log(
-            "train/loss", loss, on_epoch=True, on_step=True, batch_size=label.size()[0]
+            f"{stage}/loss", loss, on_epoch=True, on_step=True, batch_size=label.size(0)
         )
-
-        # log metrics
-        video_acc = self._accuracy(predict_softmax, label)
-        video_precision = self._precision(predict_softmax, label)
-        video_recall = self._recall(predict_softmax, label)
-        video_f1_score = self._f1_score(predict_softmax, label)
-        video_confusion_matrix = self._confusion_matrix(predict_softmax, label)
-
         self.log_dict(
             {
-                "train/video_acc": video_acc,
-                "train/video_precision": video_precision,
-                "train/video_recall": video_recall,
-                "train/video_f1_score": video_f1_score,
+                f"{stage}/video_acc": video_acc,
+                f"{stage}/video_precision": video_precision,
+                f"{stage}/video_recall": video_recall,
+                f"{stage}/video_f1_score": video_f1_score,
             },
             on_epoch=True,
             on_step=True,
-            batch_size=label.size()[0],
+            batch_size=label.size(0),
         )
 
         return loss
 
-    def validation_step(self, batch: torch.Tensor, batch_idx: int):
+    def training_step(self, batch: Dict[str, Any], batch_idx: int):
+        return self._shared_step(batch, "train")
 
-        stance_video = batch["video"][..., 0].detach()  # b, c, t, h, w
-        swing_video = batch["video"][..., 1].detach()  # b, c, t, h, w
-        # sample_info = batch["info"] # b is the video instance number
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int):
+        self._shared_step(batch, "val")
 
-        label = batch["label"]
-
-        # * slove OOM problem, cut the large batch, when >= 30
-        if stance_video.size()[0] + swing_video.size()[0] >= 30:
-            stance_preds = self.stance_cnn(stance_video[:14])
-            swing_preds = self.swing_cnn(swing_video[:14])
-            label = label[:14]
-        else:
-            stance_preds = self.stance_cnn(stance_video)
-            swing_preds = self.swing_cnn(swing_video)
-
-        # stance loss
-        stance_loss = weighted_cross_entropy(stance_preds, label, self.class_weights)
-
-        # swing loss
-        swing_loss = weighted_cross_entropy(swing_preds, label, self.class_weights)
-
-        predict = (stance_preds + swing_preds) / 2
-        predict_softmax = torch.softmax(predict, dim=1)
-
-        # loss = F.cross_entropy(predict, label.long())
-        loss = (stance_loss + swing_loss) / 2
-
-        self.log(
-            "val/loss", loss, on_epoch=True, on_step=True, batch_size=label.size()[0]
-        )
-
-        # log metrics
-        video_acc = self._accuracy(predict_softmax, label)
-        video_precision = self._precision(predict_softmax, label)
-        video_recall = self._recall(predict_softmax, label)
-        video_f1_score = self._f1_score(predict_softmax, label)
-        video_confusion_matrix = self._confusion_matrix(predict_softmax, label)
-
-        self.log_dict(
-            {
-                "val/video_acc": video_acc,
-                "val/video_precision": video_precision,
-                "val/video_recall": video_recall,
-                "val/video_f1_score": video_f1_score,
-            },
-            on_epoch=True,
-            on_step=True,
-            batch_size=label.size()[0],
-        )
-
-    def test_step(self, batch: torch.Tensor, batch_idx: int):
-
-        stance_video = batch["video"][..., 0].detach()  # b, c, t, h, w
-        swing_video = batch["video"][..., 1].detach()  # b, c, t, h, w
-        # sample_info = batch["info"] # b is the video instance number
-
-        label = batch["label"]
-
-        # * slove OOM problem, cut the large batch, when >= 30
-        if stance_video.size()[0] + swing_video.size()[0] >= 30:
-            stance_preds = self.stance_cnn(stance_video[:14])
-            swing_preds = self.swing_cnn(swing_video[:14])
-            label = label[:14]
-        else:
-            stance_preds = self.stance_cnn(stance_video)
-            swing_preds = self.swing_cnn(swing_video)
-
-        # stance loss
-        stance_loss = weighted_cross_entropy(stance_preds, label, self.class_weights)
-
-        # swing loss
-        swing_loss = weighted_cross_entropy(swing_preds, label, self.class_weights)
-
-        predict = (stance_preds + swing_preds) / 2
-        predict_softmax = torch.softmax(predict, dim=1)
-
-        # loss = F.cross_entropy(predict, label.long())
-        loss = (stance_loss + swing_loss) / 2
-
-        self.log(
-            "test/loss", loss, on_epoch=True, on_step=True, batch_size=label.size()[0]
-        )
-
-        # log metrics
-        video_acc = self._accuracy(predict_softmax, label)
-        video_precision = self._precision(predict_softmax, label)
-        video_recall = self._recall(predict_softmax, label)
-        video_f1_score = self._f1_score(predict_softmax, label)
-        video_confusion_matrix = self._confusion_matrix(predict_softmax, label)
-
-        self.log_dict(
-            {
-                "test/video_acc": video_acc,
-                "test/video_precision": video_precision,
-                "test/video_recall": video_recall,
-                "test/video_f1_score": video_f1_score,
-            },
-            on_epoch=True,
-            on_step=True,
-            batch_size=label.size()[0],
-        )
+    def test_step(self, batch: Dict[str, Any], batch_idx: int):
+        self._shared_step(batch, "test")
 
     def configure_optimizers(self):
         """

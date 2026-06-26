@@ -15,6 +15,7 @@ PREFETCH_FACTOR="${PREFETCH_FACTOR:-1}"
 MAX_EPOCHS="${MAX_EPOCHS:-50}"
 FOLD="${FOLD:-2}"
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
+SKIP_DONE="${SKIP_DONE:-0}"
 
 # Run one single-GPU process per slot. With the default "0 1", two worker
 # processes are launched and each worker runs its assigned experiments in order.
@@ -36,6 +37,14 @@ trap cleanup EXIT
 run_exp() {
   local exp_id="$1"
   shift
+
+  if [[ "${SKIP_DONE}" == "1" ]] && find "logs/train/${exp_id}" -mindepth 3 -maxdepth 3 -name metrics.txt -print -quit 2>/dev/null | grep -q .; then
+    echo
+    echo "===== ${exp_id} ====="
+    echo "Skipping completed experiment; found logs/train/${exp_id}/*/*/metrics.txt"
+    return 0
+  fi
+
   local slot_idx=$((JOB_COUNT % ${#GPU_SLOT_LIST[@]}))
   local gpu_id="${GPU_SLOT_LIST[$slot_idx]}"
   local queue_file="${QUEUE_DIR}/gpu_${gpu_id}.queue"
