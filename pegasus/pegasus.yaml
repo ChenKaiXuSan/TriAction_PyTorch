@@ -1,0 +1,16 @@
+# @package _global_
+# Pegasus 集群机器配置：只覆盖与机器相关的路径，其余全部继承 configs/config.yaml。
+# 交互式（登录节点调试 / 计算节点手动跑）用法：
+#   python -m project.main --config-dir pegasus --config-name pegasus [其他 overrides]
+#   python -m project.eval --config-dir pegasus --config-name pegasus
+# 批量实验请用 pegasus/qsub_all.sh（qsub 任务走 run_common.sh，其中的路径与本文件一致，改动时两处同步）。
+defaults:
+  - /config
+  - _self_
+
+paths:
+  root_path: /work/SKIING/chenkaixu/data/drive
+  video_path: /work/SKIING/chenkaixu/data/drive/videos_split
+  sam3d_results_path: /work/SKIING/chenkaixu/data/drive/sam3d_body_results_right
+  # 此机器上 split_mid_end 位于 annotation/ 下，与默认布局不同
+  start_mid_end_path: ${paths.root_path}/annotation/split_mid_end/mini.json

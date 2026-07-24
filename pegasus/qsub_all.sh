@@ -1,0 +1,157 @@
+#!/bin/bash
+set -euo pipefail
+
+# Batch submit TriAction experiment-matrix jobs on Pegasus.
+# Default is dry-run. Add --run to actually submit jobs.
+# One qsub job per experiment; every job fits the 24h walltime limit.
+
+cd "$(dirname "$0")/.."
+
+MODE="${1:-all}"
+ACTION="${2:-dry-run}"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  pegasus/qsub_all.sh [smoke|single_view|modality|backbone|fusion|late_backbone|ts_cva|all] [dry-run|--run]
+
+Examples:
+  pegasus/qsub_all.sh                     # dry-run everything
+  pegasus/qsub_all.sh smoke --run         # submit the smoke job only
+  pegasus/qsub_all.sh fusion --run        # submit the fusion comparison
+  pegasus/qsub_all.sh all --run           # submit the full matrix (22 jobs)
+
+Modes:
+  smoke          1-epoch sanity check (submit this first, alone)
+  single_view    B: front/left/right, rgb, 3dcnn
+  modality       M: kpt and rgb_kpt on front (rgb baseline = B_single_front)
+  backbone       A: transformer/mamba/videomae/vivit on front (3dcnn = B_single_front)
+  fusion         F: multi-view add/concat/avg/mid/late with 3dcnn
+  late_backbone  L: late fusion with transformer/mamba/videomae/vivit (3dcnn = F late)
+  ts_cva         T: TS-CVA ablations (full model = F mid)
+  all            all formal jobs (everything except smoke)
+
+Before the first --run:
+  pegasus/prepare_index.sh       # pre-generate the shared train/val split index
+  pegasus/prepare_hf_models.sh   # only needed for videomae/vivit jobs
+EOF
+}
+
+smoke_scripts=(
+    run_smoke.sh
+)
+
+single_view_scripts=(
+    run_b_single_front_rgb_3dcnn.sh
+    run_b_single_left_rgb_3dcnn.sh
+    run_b_single_right_rgb_3dcnn.sh
+)
+
+modality_scripts=(
+    run_m_front_kpt.sh
+    run_m_front_rgb_kpt_3dcnn.sh
+)
+
+backbone_scripts=(
+    run_a_front_rgb_transformer.sh
+    run_a_front_rgb_mamba.sh
+    run_a_front_rgb_videomae.sh
+    run_a_front_rgb_vivit.sh
+)
+
+fusion_scripts=(
+    run_f_multi_add.sh
+    run_f_multi_concat.sh
+    run_f_multi_avg.sh
+    run_f_multi_mid.sh
+    run_f_multi_late.sh
+)
+
+late_backbone_scripts=(
+    run_l_late_transformer.sh
+    run_l_late_mamba.sh
+    run_l_late_videomae.sh
+    run_l_late_vivit.sh
+)
+
+ts_cva_scripts=(
+    run_t_mid_no_gated_aggregation.sh
+    run_t_mid_no_view_embedding.sh
+    run_t_mid_heads8.sh
+    run_t_mid_heads2.sh
+)
+
+case "$MODE" in
+    smoke)
+        scripts=("${smoke_scripts[@]}")
+        ;;
+    single_view)
+        scripts=("${single_view_scripts[@]}")
+        ;;
+    modality)
+        scripts=("${modality_scripts[@]}")
+        ;;
+    backbone)
+        scripts=("${backbone_scripts[@]}")
+        ;;
+    fusion)
+        scripts=("${fusion_scripts[@]}")
+        ;;
+    late_backbone)
+        scripts=("${late_backbone_scripts[@]}")
+        ;;
+    ts_cva)
+        scripts=("${ts_cva_scripts[@]}")
+        ;;
+    all)
+        scripts=(
+            "${single_view_scripts[@]}"
+            "${modality_scripts[@]}"
+            "${backbone_scripts[@]}"
+            "${fusion_scripts[@]}"
+            "${late_backbone_scripts[@]}"
+            "${ts_cva_scripts[@]}"
+        )
+        ;;
+    -h|--help|help)
+        usage
+        exit 0
+        ;;
+    *)
+        echo "Unknown mode: $MODE" >&2
+        usage
+        exit 2
+        ;;
+esac
+
+if [[ "$ACTION" != "dry-run" && "$ACTION" != "--run" ]]; then
+    echo "Unknown action: $ACTION" >&2
+    usage
+    exit 2
+fi
+
+echo "Mode: $MODE"
+echo "Action: $ACTION"
+echo
+
+mkdir -p logs/pegasus/
+
+for script in "${scripts[@]}"; do
+    if [[ ! -f "pegasus/$script" ]]; then
+        echo "Missing script: pegasus/$script" >&2
+        exit 1
+    fi
+
+    if [[ "$ACTION" == "--run" ]]; then
+        echo "qsub pegasus/$script"
+        qsub "pegasus/$script"
+        sleep 1
+    else
+        echo "[dry-run] qsub pegasus/$script"
+    fi
+done
+
+if [[ "$ACTION" != "--run" ]]; then
+    echo
+    echo "Dry run only. Re-run with --run to submit."
+fi
