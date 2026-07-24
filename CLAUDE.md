@@ -48,7 +48,7 @@ Requires GPU for training (`accelerator="gpu"`); `train.gpu` takes a list of dev
 2. A trainer (LightningModule) is selected by `train.view`:
    - `single` → `project/trainer/single_selector.py` → `SingleModalityClassifierTrainer` (handles all of rgb/kpt/rgb_kpt; wraps `select_model` from project/models/make_model.py).
    - `multi` → `project/trainer/multi_selector.py`, routed by `model.fuse_method`: early (`add|mul|concat|avg`), mid (`mid` → `MultiTSCVATrainer`, 3dcnn backbone only), late (`late`, per-backbone trainer classes). Multi-view only supports `model.input_type=rgb`.
-3. `DriverDataModule` (project/dataloader/data_loader.py) + PL `Trainer` run `fit`, then `test` with `ckpt_path="best"` (checkpoint/early-stop monitor `val/loss`). Logs, checkpoints, TensorBoard, and CSV metrics go to `logs/train/${experiment}/<date>/<time>`.
+3. `DriverDataModule` (project/dataloader/data_loader.py) + PL `Trainer` run `fit`, then `test` with `ckpt_path="best"` (checkpoint monitors `val/loss`; early stopping is off by default, re-enable with `train.early_stopping=true`). Logs, checkpoints, TensorBoard, and CSV metrics go to `logs/train/${experiment}/<date>/<time>`.
 
 `project/eval.py` mirrors this flow but locates the best checkpoint under `log_path` and only runs `trainer.test`.
 
