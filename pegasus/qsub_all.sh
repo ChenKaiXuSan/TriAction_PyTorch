@@ -13,7 +13,7 @@ ACTION="${2:-dry-run}"
 usage() {
     cat <<'EOF'
 Usage:
-  pegasus/qsub_all.sh [smoke|single_view|modality|backbone|fusion|late_backbone|ts_cva|all] [dry-run|--run]
+  pegasus/qsub_all.sh [smoke|single_view|modality|backbone|fusion|late_backbone|ts_cva|noes|all] [dry-run|--run]
 
 Examples:
   pegasus/qsub_all.sh                     # dry-run everything
@@ -29,7 +29,9 @@ Modes:
   fusion         F: multi-view add/concat/avg/mid/late with 3dcnn
   late_backbone  L: late fusion with transformer/mamba/videomae/vivit (3dcnn = F late)
   ts_cva         T: TS-CVA ablations (full model = F mid)
-  all            all formal jobs (everything except smoke)
+  noes           no-early-stopping full-length variants of the matrix (21 jobs;
+                 front rgb 3dcnn is covered by run_e_noes_single_front_rgb_3dcnn.sh)
+  all            all formal jobs (everything except smoke and noes)
 
 Before the first --run:
   pegasus/prepare_index.sh       # pre-generate the shared train/val split index
@@ -74,6 +76,8 @@ late_backbone_scripts=(
     run_l_late_vivit.sh
 )
 
+noes_scripts=($(cd "$(dirname "$0")" && ls run_noes_*.sh 2>/dev/null))
+
 ts_cva_scripts=(
     run_t_mid_no_gated_aggregation.sh
     run_t_mid_no_view_embedding.sh
@@ -102,6 +106,9 @@ case "$MODE" in
         ;;
     ts_cva)
         scripts=("${ts_cva_scripts[@]}")
+        ;;
+    noes)
+        scripts=("${noes_scripts[@]}")
         ;;
     all)
         scripts=(

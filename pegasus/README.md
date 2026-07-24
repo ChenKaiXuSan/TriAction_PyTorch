@@ -92,3 +92,10 @@ pegasus/qsub_all.sh fusion --run     # 或按组提交
 - 索引缓存：`${DATA_ROOT}/index_mapping/index_single_magicmove.json` 只在缺失时生成。改了数据路径或切分逻辑后要先删掉再重新 `prepare_index.sh`。
 - 单个作业超 24h 时：用 `MAX_EPOCHS=30 qsub pegasus/run_xxx.sh` 减 epoch，或先用 smoke 作业估算单 epoch 用时。
 - 作业名（`#PBS -N`）限制较短，与实验 ID 不完全一致；对照上表查询。
+
+## 无早停全量变体(noes)
+
+`run_noes_*.sh` 是 22 个正式实验的无早停变体(`train.early_stopping=false`,
+全量 `max_epochs`),实验 ID 加 `_noes` 后缀,日志同理,不覆盖早停版结果。
+front rgb 3dcnn 由 `run_e_noes_single_front_rgb_3dcnn.sh` 覆盖,故共 21 个。
+提交:`pegasus/qsub_all.sh noes --run`。
