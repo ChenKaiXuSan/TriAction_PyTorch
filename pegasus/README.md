@@ -45,8 +45,8 @@ python -m project.eval --config-dir pegasus --config-name pegasus
 | M 模态 | `M_front_rgb_kpt_3dcnn` | single front | rgb+kpt | 3dcnn | modality concat | |
 | A 骨干 | `A_front_rgb_transformer` | single front | rgb | transformer | – | |
 | A 骨干 | `A_front_rgb_mamba` | single front | rgb | mamba | – | |
-| A 骨干 | `A_front_rgb_videomae` | single front | rgb | videomae | – | HF, batch 1 / accum 16 / 16 帧 |
-| A 骨干 | `A_front_rgb_vivit` | single front | rgb | vivit | – | HF, batch 1 / accum 16 / 32 帧, `refs/pr/3` |
+| A 骨干 | `A_front_rgb_videomae` | single front | rgb | videomae | – | HF, batch 4 / accum 4 / 16 帧 |
+| A 骨干 | `A_front_rgb_vivit` | single front | rgb | vivit | – | HF, batch 2 / accum 8 / 32 帧, `refs/pr/3` |
 | F 融合 | `F_multi_rgb_3dcnn_add` | multi 3-view | rgb | 3dcnn | early add | |
 | F 融合 | `F_multi_rgb_3dcnn_concat` | multi 3-view | rgb | 3dcnn | early concat | |
 | F 融合 | `F_multi_rgb_3dcnn_avg` | multi 3-view | rgb | 3dcnn | early avg | |
@@ -61,7 +61,7 @@ python -m project.eval --config-dir pegasus --config-name pegasus
 | T 消融 | `T_mid_heads8` | multi 3-view | rgb | 3dcnn | mid | 注意力头数 8 |
 | T 消融 | `T_mid_heads2` | multi 3-view | rgb | 3dcnn | mid | 注意力头数 2 |
 
-公共设置：50 epochs、precision `16-mixed`、非 HF 实验 batch 16 / accum 1 / 8 帧、`train.gpu=[0]`（每作业 1 GPU 节点）。所有参数可用环境变量覆盖后 qsub，如 `MAX_EPOCHS=30 qsub pegasus/run_f_multi_mid.sh`（可用变量见 `run_common.sh` 顶部）。
+公共设置：50 epochs、precision `bf16-mixed`（H100 原生 bfloat16）、非 HF 实验 batch 16 / accum 1 / 8 帧、`train.gpu=[0]`（每作业 1 GPU 节点）。所有参数可用环境变量覆盖后 qsub，如 `MAX_EPOCHS=30 qsub pegasus/run_f_multi_mid.sh`（可用变量见 `run_common.sh` 顶部）。
 
 ## 批量提交步骤
 

@@ -21,14 +21,16 @@ echo "Total CPU cores: $(nproc)"
 
 BATCH_SIZE="${BATCH_SIZE:-16}"
 ACCUMULATE_GRAD_BATCHES="${ACCUMULATE_GRAD_BATCHES:-1}"
-PRECISION="${PRECISION:-16-mixed}"
+# H100 runs bfloat16 natively; more numerically stable than fp16 at the same speed.
+PRECISION="${PRECISION:-bf16-mixed}"
 MAX_EPOCHS="${MAX_EPOCHS:-50}"
 FRAMES="${FRAMES:-8}"
-# Video decode is the training bottleneck; one job owns the whole node.
-NUM_WORKERS="${NUM_WORKERS:-$(( $(nproc) / 3 ))}"
-VAL_NUM_WORKERS="${VAL_NUM_WORKERS:-2}"
-TEST_NUM_WORKERS="${TEST_NUM_WORKERS:-2}"
-PREFETCH_FACTOR="${PREFETCH_FACTOR:-2}"
+# Video decode is the training bottleneck and one job owns the whole 48-core
+# H100 node, so feed the GPU aggressively.
+NUM_WORKERS="${NUM_WORKERS:-$(( $(nproc) / 2 ))}"
+VAL_NUM_WORKERS="${VAL_NUM_WORKERS:-4}"
+TEST_NUM_WORKERS="${TEST_NUM_WORKERS:-4}"
+PREFETCH_FACTOR="${PREFETCH_FACTOR:-4}"
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
 
 run_exp() {
