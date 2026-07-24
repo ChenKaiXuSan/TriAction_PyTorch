@@ -105,6 +105,21 @@ ViViT(Kinetics-400 预训练)大幅领先;3dcnn / transformer / mamba 基本同�
    都是早停撞上好停点的噪声,全量版结论(late-vivit 最优、view embedding 有效)更可靠。
 3. **正式结论应以本报告(全量版)为准**。
 
+## 附:新架构实验 N_multi_mv_vivit(MV-ViViT,同日追加)
+
+冻结共享 ViViT + 可训练跨视角 token 注意力融合(2 层、8 heads、view embedding、
+mean pooling;`model.fuse_method=mv_vivit`),仅 11M 可训练参数,全量 50 epochs:
+
+| 实验 | 可训练参数 | acc | F1 |
+|---|---|---|---|
+| L_multi_late_vivit(3 个全量微调 ViViT) | ~260M | **56.7%** | **51.2%** |
+| **N_multi_mv_vivit(冻结 + 跨视角融合)** | **11M** | 54.0% | 46.1% |
+| A_front_rgb_vivit(单视角) | ~87M | 52.9% | 47.1% |
+
+以 4% 的可训练参数量拿到第 2 名(+1.1 vs 单视角),但尚未超过全量微调的晚融合;
+val/loss 在 epoch 5 后即过拟合(best ckpt 也取自 epoch 5),融合容量/正则化和
+部分解冻 backbone 是下一步方向。
+
 ## 已知问题
 
 - ⚠️ **videomae 权重映射不完整**:当前 transformers 版本加载
