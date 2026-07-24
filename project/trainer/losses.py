@@ -21,7 +21,6 @@ def build_class_weights(hparams, device: torch.device | None = None) -> torch.Te
           right: 1.0
           down: 1.0
           up: 4.0
-          front: 0.2
 
     Returns None when class weighting is disabled or incomplete.
     """

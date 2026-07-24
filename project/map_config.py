@@ -29,20 +29,19 @@ label_mapping_Dict: Dict = {
     1: "right",
     2: "down",
     3: "up",
-    4: "front",
 }
 
-# Original 8-class labels -> merged 4-class labels
+# Original 8-class labels -> merged 4-class labels.
+# Vertical components take precedence for the 4-class direction task.
 label_mapping_8_to_4_Dict: Dict[str, str] = {
     "left": "left",
-    "left_up": "left",
-    "left_down": "left",
+    "left_up": "up",
+    "left_down": "down",
     "right": "right",
-    "right_up": "right",
-    "right_down": "right",
+    "right_up": "up",
+    "right_down": "down",
     "up": "up",
     "down": "down",
-    "front": "front",
 }
 
 

@@ -22,7 +22,7 @@ Examples:
     
     Late Fusion:
         fuse_method: "late"
-        backbone: "3dcnn" | "transformer" | "mamba"
+        backbone: "3dcnn" | "transformer" | "mamba" | "videomae" | "vivit"
 """
 
 import logging
@@ -66,6 +66,8 @@ LATE_FUSION_TRAINERS = {
     "3dcnn": LateFusion3DCNNTrainer,
     "transformer": LateFusionTransformerTrainer,
     "mamba": LateFusionMambaTrainer,
+    "videomae": LateFusion3DCNNTrainer,
+    "vivit": LateFusion3DCNNTrainer,
 }
 
 # Comprehensive trainers mapping for quick lookup
@@ -125,7 +127,7 @@ def _validate_hparams(hparams) -> tuple:
     if not backbone:
         raise ValueError(
             f"model.backbone is required. "
-            f"Supported: 3dcnn, transformer, mamba"
+            f"Supported: 3dcnn, transformer, mamba, videomae, vivit"
         )
     
     return view_type, input_type, fuse_method, backbone

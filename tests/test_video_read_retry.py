@@ -17,15 +17,16 @@ class VideoReadRetryTests(unittest.TestCase):
         frames = torch.zeros(1, 3, 4, 4)
         calls = {"count": 0}
 
-        def flaky_read_video(path, **kwargs):
+        def flaky_decode(path, start_sec=None, end_sec=None):
             calls["count"] += 1
             if calls["count"] == 1:
                 raise BlockingIOError(11, "Resource temporarily unavailable")
             return frames, None, {"video_fps": 30}
 
-        with patch(
-            "project.dataloader.whole_video_dataset.read_video",
-            side_effect=flaky_read_video,
+        with patch.object(
+            LabeledVideoDataset,
+            "_decode_video_single_threaded",
+            side_effect=flaky_decode,
         ):
             loaded_frames, _, info = dataset._read_video_with_retry(
                 "video.mp4",

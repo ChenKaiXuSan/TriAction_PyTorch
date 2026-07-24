@@ -45,8 +45,9 @@ from trainer.mid.train_pose_attn import PoseAttnTrainer
 from trainer.early.train_early_fusion import EarlyFusion3DCNNTrainer
 from trainer.late.train_late_fusion import LateFusion3DCNNTrainer
 
-# K-fold splitter
+# Dataset splitter
 from cross_validation import DefineCrossValidation
+from main import normalize_dataset_split, RUN_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -84,21 +85,18 @@ def _parse_ckpt_metric(path: str) -> Optional[Tuple[int, float, float]]:
     return int(epoch), float(vloss), float(vacc)
 
 
-def _find_best_ckpt_for_fold(log_path: str, fold: str | int) -> Optional[str]:
+def _find_best_ckpt(log_path: str) -> Optional[str]:
     """
-    Search all version_* for this fold's checkpoints and pick the highest val/video_acc.
+    Search checkpoints for the single run and pick the highest val/video_acc.
     Fallback order:
       1) best by parsed val/video_acc
       2) last.ckpt
       3) None (caller will run without pretrained weights)
     """
-    fold_dir = os.path.join(log_path, str(fold))
-    if not os.path.isdir(fold_dir):
-        return None
-
     # 1) collect all candidate ckpts with metrics in filename
-    pattern = os.path.join(fold_dir, "version_*", "checkpoints", "*.ckpt")
-    candidates = glob.glob(pattern)
+    candidates = glob.glob(os.path.join(log_path, "checkpoints", RUN_NAME, "*.ckpt"))
+    if not candidates:
+        candidates = glob.glob(os.path.join(log_path, "checkpoints", "fold_*", "*.ckpt"))
     best_path = None
     best_acc = -math.inf
 
@@ -131,7 +129,7 @@ def _find_best_ckpt_for_fold(log_path: str, fold: str | int) -> Optional[str]:
 
 def _aggregate(results: List[Dict[str, float]]) -> Dict[str, Dict[str, float]]:
     """
-    Aggregate a list of test result dicts (one per fold).
+    Aggregate a list of test result dicts.
     Returns a dict: metric -> {"mean": ..., "std": ...}
     Only aggregates keys starting with 'test/' and whose values are numbers.
     """
@@ -156,7 +154,7 @@ def _aggregate(results: List[Dict[str, float]]) -> Dict[str, Dict[str, float]]:
 
 def _save_outputs(
     out_dir: str,
-    fold_results: Dict[str, Dict[str, float]],
+    run_results: Dict[str, Dict[str, float]],
     aggregate_stats: Dict[str, Dict[str, float]],
 ) -> Tuple[str, str]:
     os.makedirs(out_dir, exist_ok=True)
@@ -168,7 +166,7 @@ def _save_outputs(
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(
             {
-                "per_fold": fold_results,
+                "runs": run_results,
                 "aggregate": aggregate_stats,
                 "created_at": ts,
             },
@@ -182,15 +180,15 @@ def _save_outputs(
 
     # collect header
     metric_names = set()
-    for _fold, metrics in fold_results.items():
+    for _run, metrics in run_results.items():
         metric_names.update([k for k in metrics.keys() if k.startswith("test/")])
     metric_names = sorted(metric_names)
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["fold"] + metric_names)
-        for fld, metrics in sorted(fold_results.items(), key=lambda x: str(x[0])):
-            row = [fld] + [metrics.get(m, "") for m in metric_names]
+        writer.writerow(["run"] + metric_names)
+        for run_name, metrics in sorted(run_results.items(), key=lambda x: str(x[0])):
+            row = [run_name] + [metrics.get(m, "") for m in metric_names]
             writer.writerow(row)
         # add a blank line and aggregate
         writer.writerow([])
@@ -215,8 +213,8 @@ def _make_trainer(hparams: DictConfig) -> Trainer:
     )
 
 
-def _eval_one_fold(hparams: DictConfig, dataset_idx, fold: int) -> Dict[str, float]:
-    """Run test() for one fold and return the metrics dict."""
+def _eval_one_run(hparams: DictConfig, dataset_idx) -> Dict[str, float]:
+    """Run test() for the single split and return the metrics dict."""
     seed_everything(42, workers=True)
 
     # module and data
@@ -227,12 +225,12 @@ def _eval_one_fold(hparams: DictConfig, dataset_idx, fold: int) -> Dict[str, flo
     ckpt_root = _cfg_get(hparams, "eval.input_path", _cfg_get(hparams, "log_path"))
     if ckpt_root is None:
         raise ValueError("Missing eval.input_path or log_path for checkpoint lookup.")
-    ckpt = _find_best_ckpt_for_fold(str(ckpt_root), fold)
+    ckpt = _find_best_ckpt(str(ckpt_root))
     if ckpt:
-        logger.info(f"[fold {fold}] Using checkpoint: {ckpt}")
+        logger.info(f"Using checkpoint: {ckpt}")
     else:
         logger.warning(
-            f"[fold {fold}] No checkpoint found. Running test() with randomly initialized weights."
+            "No checkpoint found. Running test() with randomly initialized weights."
         )
 
     trainer = _make_trainer(hparams)
@@ -245,7 +243,7 @@ def _eval_one_fold(hparams: DictConfig, dataset_idx, fold: int) -> Dict[str, flo
 
     # PL returns a list[dict]; typically len==1 unless multiple test loaders
     if not test_out:
-        logger.warning(f"[fold {fold}] Empty test result; returning empty dict.")
+        logger.warning("Empty test result; returning empty dict.")
         return {}
 
     # If multiple dicts, merge keys by later overwriting (usually fine)
@@ -262,50 +260,31 @@ def _eval_one_fold(hparams: DictConfig, dataset_idx, fold: int) -> Dict[str, flo
 )
 def main(config: DictConfig):
     """
-    K-fold evaluation:
-    - Load fold mappings using DefineCrossValidation(config)()
-    - Run evaluation for the requested eval.fold, or all folds when eval.fold is unset/all
-    - For each selected fold, load best ckpt if available and run trainer.test
-    - Save per-fold results and aggregate mean/std to log_path
+    Single-split evaluation:
+    - Load one train/validation split using DefineCrossValidation(config)()
+    - Load best checkpoint if available and run trainer.test
+    - Save run results and aggregate mean/std to log_path
     """
-    # Prepare folds
-    fold_dataset_idx = DefineCrossValidation(config)()
-    eval_fold = _cfg_get(config, "eval.fold")
-    if eval_fold is None or str(eval_fold).lower() == "all":
-        target_folds = sorted(fold_dataset_idx.keys())
+    dataset_idx = normalize_dataset_split(DefineCrossValidation(config)())
+
+    logger.info("#" * 60)
+    logger.info("Start EVALUATION")
+    logger.info("#" * 60)
+
+    metrics = _eval_one_run(config, dataset_idx)
+    run_results = {RUN_NAME: metrics}
+    if metrics:
+        nice = {
+            k: round(v, 6)
+            for k, v in metrics.items()
+            if isinstance(v, (int, float))
+        }
+        logger.info("test metrics: %s", nice)
     else:
-        target_folds = [int(eval_fold)]
-        if target_folds[0] not in fold_dataset_idx:
-            raise KeyError(f"Requested eval.fold={target_folds[0]} not found in mapping.")
-
-    logger.info("#" * 60)
-    logger.info("Start EVALUATION over fold(s): %s", target_folds)
-    logger.info("#" * 60)
-
-    per_fold_results: Dict[str, Dict[str, float]] = {}
-
-    for fold in target_folds:
-        dataset_value = fold_dataset_idx[fold]
-        logger.info("#" * 60)
-        logger.info(f"Evaluating fold: {fold}")
-        logger.info("#" * 60)
-
-        metrics = _eval_one_fold(config, dataset_value, fold)
-        per_fold_results[str(fold)] = metrics
-
-        # Pretty print small summary
-        if metrics:
-            nice = {
-                k: round(v, 6)
-                for k, v in metrics.items()
-                if isinstance(v, (int, float))
-            }
-            logger.info(f"[fold {fold}] test metrics: {nice}")
-        else:
-            logger.info(f"[fold {fold}] No metrics returned.")
+        logger.info("No metrics returned.")
 
     # Aggregate
-    aggregate_stats = _aggregate(list(per_fold_results.values()))
+    aggregate_stats = _aggregate(list(run_results.values()))
 
     logger.info("#" * 60)
     logger.info("Aggregate (mean ± std) for test/* metrics:")
@@ -317,9 +296,9 @@ def main(config: DictConfig):
     out_dir = _cfg_get(config, "eval.log_path", _cfg_get(config, "log_path"))
     if out_dir is None:
         raise ValueError("Missing eval.log_path or log_path for evaluation outputs.")
-    json_path, csv_path = _save_outputs(out_dir, per_fold_results, aggregate_stats)
+    json_path, csv_path = _save_outputs(out_dir, run_results, aggregate_stats)
     logger.info(f"Saved evaluation results:\n  JSON: {json_path}\n  CSV : {csv_path}")
-    logger.info("Finished EVALUATION over all folds.")
+    logger.info("Finished EVALUATION.")
 
 
 if __name__ == "__main__":

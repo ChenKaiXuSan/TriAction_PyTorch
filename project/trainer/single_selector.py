@@ -11,7 +11,7 @@ from project.trainer.single.train_single_modality import SingleModalityClassifie
 logger = logging.getLogger(__name__)
 
 
-SUPPORTED_RGB_BACKBONES = {"3dcnn", "transformer", "mamba"}
+SUPPORTED_RGB_BACKBONES = {"3dcnn", "transformer", "mamba", "videomae", "vivit"}
 SUPPORTED_INPUT_TYPES = {"rgb", "kpt", "rgb_kpt"}
 
 

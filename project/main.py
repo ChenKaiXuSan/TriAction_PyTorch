@@ -22,7 +22,7 @@ Date      	By	Comments
 
 import logging
 import os
-from typing import Any, List
+from typing import Any, List, Mapping
 
 os.environ.setdefault("NCCL_P2P_DISABLE", "1")
 # os.environ.setdefault('NCCL_SHM_DISABLE', '1')
@@ -51,6 +51,7 @@ from project.trainer.multi_selector import build_multi_trainer
 from project.trainer.single_selector import build_single_trainer
 
 logger = logging.getLogger(__name__)
+RUN_NAME = "run"
 
 
 def parse_train_devices(gpu_config: Any) -> List[int]:
@@ -70,13 +71,34 @@ def parse_train_devices(gpu_config: Any) -> List[int]:
     return [int(gpu_config)]
 
 
-def train(hparams: DictConfig, dataset_idx, fold: int):
-    """the train process for the one fold.
+def normalize_dataset_split(dataset_idx):
+    """Return the single train/val split expected by DriverDataModule."""
+    if not isinstance(dataset_idx, Mapping):
+        raise TypeError("dataset index must be a mapping with train/val splits.")
+
+    if "train" in dataset_idx and "val" in dataset_idx:
+        return dataset_idx
+
+    legacy_folds = [
+        split
+        for split in dataset_idx.values()
+        if isinstance(split, Mapping) and "train" in split and "val" in split
+    ]
+    if len(legacy_folds) == 1 and len(dataset_idx) == 1:
+        return legacy_folds[0]
+
+    raise ValueError(
+        "Expected a single dataset split with train/val entries. "
+        "Multiple folds are no longer supported."
+    )
+
+
+def train(hparams: DictConfig, dataset_idx):
+    """Run the training process for a single train/val split.
 
     Args:
         hparams (hydra): the hyperparameters.
-        dataset_idx (int): the dataset index for the one fold.
-        fold (int): the fold index.
+        dataset_idx (dict): the dataset index with train/val splits.
 
     Returns:
         list: best trained model, data loader
@@ -99,11 +121,11 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
     # for the tensorboard
     tb_logger = TensorBoardLogger(
         save_dir=os.path.join(hparams.log_path, "tb_logs"),
-        name="fold_" + str(fold),  # here should be str type.
+        name=RUN_NAME,
     )
     csv_logger = CSVLogger(
         save_dir=os.path.join(hparams.log_path, "csv_logs"),
-        name="fold_" + str(fold),  # here should be str type.
+        name=RUN_NAME,
     )
 
     # some callbacks
@@ -112,7 +134,7 @@ def train(hparams: DictConfig, dataset_idx, fold: int):
 
     # define the checkpoint becavier.
     model_check_point = ModelCheckpoint(
-        dirpath=os.path.join(hparams.log_path, "checkpoints", "fold_" + str(fold)),
+        dirpath=os.path.join(hparams.log_path, "checkpoints", RUN_NAME),
         filename="{epoch}-{val/loss:.2f}",
         auto_insert_metric_name=False,
         monitor="val/loss",
@@ -174,30 +196,16 @@ def init_params(config):
     # prepare dataset index
     #######################
 
-    fold_dataset_idx = DefineCrossValidation(config)()
+    dataset_idx = normalize_dataset_split(DefineCrossValidation(config)())
 
     logger.info("#" * 50)
-    logger.info("Start train all fold")
+    logger.info("Start train")
     logger.info("#" * 50)
 
-    #########
-    # K fold
-    #########
-    # * for one fold, we first train/val model, then save the best ckpt preds/label into .pt file.
-
-    for fold, dataset_value in fold_dataset_idx.items():
-        logger.info("#" * 50)
-        logger.info(f"Start train fold: {fold}")
-        logger.info("#" * 50)
-
-        train(config, dataset_value, fold)
-
-        logger.info("#" * 50)
-        logger.info(f"finish train fold: {fold}")
-        logger.info("#" * 50)
+    train(config, dataset_idx)
 
     logger.info("#" * 50)
-    logger.info("finish train all fold")
+    logger.info("finish train")
     logger.info("#" * 50)
 
 

@@ -74,14 +74,14 @@ class SegmentBatchingTests(unittest.TestCase):
             batch_unit="segment",
         )
 
-        self.assertEqual(len(dataset), 4)
+        self.assertEqual(len(dataset), 2)
         sample = dataset[0]
 
         self.assertEqual(sample["label"].item(), 0)
         self.assertEqual(sample["label_info"], "left")
         self.assertEqual(tuple(sample["video"]["front"].shape), (3, 2, 4, 4))
         self.assertEqual(sample["meta"]["segment_idx"], 0)
-        self.assertEqual(sample["meta"]["segment_count"], 4)
+        self.assertEqual(sample["meta"]["segment_count"], 2)
 
     def test_collate_stacks_segment_items_into_true_batch(self):
         dataset = FakeSegmentDataset(
@@ -106,7 +106,7 @@ class SegmentBatchingTests(unittest.TestCase):
         self.assertEqual(tuple(batch["video"]["front"].shape), (2, 3, 2, 4, 4))
         self.assertEqual(len(batch["meta"]), 2)
         self.assertEqual([m["segment_idx"] for m in batch["meta"]], [0, 1])
-        self.assertEqual([m["segment_count"] for m in batch["meta"]], [4, 4])
+        self.assertEqual([m["segment_count"] for m in batch["meta"]], [2, 2])
         self.assertEqual([c["segment_idx"] for c in batch["chunk_info"]], [0, 1])
 
     def test_segment_mode_loads_chunk_range_not_segment_range(self):
@@ -139,7 +139,7 @@ class SegmentBatchingTests(unittest.TestCase):
         indices = list(sampler)
         source_indices = [dataset._segment_index[i]["source_index"] for i in indices]
 
-        self.assertEqual(source_indices, [0, 0, 0, 0, 1, 1, 1, 1])
+        self.assertEqual(source_indices, [0, 0, 1, 1])
 
     def test_sam3d_loader_uses_absolute_frame_filenames_and_output_payload(self):
         dataset = FakeSegmentDataset(

@@ -43,6 +43,14 @@ def select_rgb_model(hparams) -> nn.Module:
         from project.models.video_mamba import VideoMamba
 
         model = VideoMamba(hparams)
+    elif model_backbone == "videomae":
+        from project.models.hf_video_backbone import VideoMAEBackbone
+
+        model = VideoMAEBackbone(hparams)
+    elif model_backbone == "vivit":
+        from project.models.hf_video_backbone import VivitBackbone
+
+        model = VivitBackbone(hparams)
     else:
         raise ValueError(f"Unknown model backbone: {model_backbone}")
 

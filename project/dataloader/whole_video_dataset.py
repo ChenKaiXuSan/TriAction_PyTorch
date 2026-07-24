@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, List, Tuple
@@ -10,9 +11,10 @@ import numpy as np
 from collections import OrderedDict
 from bisect import bisect_left
 
+import av
 import torch
+from av.video.reformatter import VideoReformatter
 from torch.utils.data import Dataset
-from torchvision.io import read_video
 
 from project.dataloader.prepare_label_dict import prepare_label_dict
 from project.map_config import (
@@ -88,7 +90,10 @@ class LabeledVideoDataset(Dataset):
         self._frame_cache: OrderedDict[
             Tuple[str, Optional[float], Optional[float]], torch.Tensor
         ] = OrderedDict()
-        self._cache_max_size = 2  # Keep most recent 2 videos in memory
+        # Hold every requested view of the current chunk plus one slot of
+        # headroom; a fixed 2-slot LRU thrashes with 3-view loading (each
+        # segment would re-decode all views).
+        self._cache_max_size = max(2, len(self.view_name) + 1)
         self._cache_memory_limit_mb = 4096  # ~4GB max cache
 
         # Label cache + valid index mapping (for proper shuffle with unlabeled skip)
@@ -120,6 +125,85 @@ class LabeledVideoDataset(Dataset):
                 f"Labeled sample filtering: kept {len(self._valid_source_indices)}/{source_total} samples"
             )
 
+    def _decode_video_single_threaded(
+        self,
+        path: str,
+        start_sec: Optional[float] = None,
+        end_sec: Optional[float] = None,
+    ):
+        """Decode a video range with PyAV using a single decoder thread.
+
+        torchvision.io.read_video lets FFmpeg auto-scale decoder/swscale
+        threads to the CPU core count; with several dataloader workers this
+        spawns thousands of short-lived threads and crashes with EAGAIN
+        ("Resource temporarily unavailable"). The source videos are small
+        (~332x224), so one decode thread per worker is both stable and fast.
+
+        Mirrors read_video(pts_unit="sec", output_format="TCHW") semantics:
+        frames with start_sec <= pts <= end_sec, returned as uint8 (T, C, H, W)
+        plus an info dict containing "video_fps".
+        """
+        with av.open(path, metadata_errors="ignore") as container:
+            stream = container.streams.video[0]
+            codec_ctx = stream.codec_context
+            codec_ctx.thread_type = "NONE"
+            codec_ctx.thread_count = 1
+
+            fps = float(stream.average_rate) if stream.average_rate else 0.0
+            info = {"video_fps": fps}
+            time_base = stream.time_base
+            start_offset = (
+                0 if start_sec is None else int(math.floor(start_sec / time_base))
+            )
+            end_offset = (
+                None if end_sec is None else int(math.ceil(end_sec / time_base))
+            )
+
+            if start_offset > 0:
+                container.seek(
+                    start_offset, backward=True, any_frame=False, stream=stream
+                )
+
+            # One reformatter per chunk read: reuses a single swscale graph for
+            # every frame instead of building (and threading) one per frame.
+            reformatter = VideoReformatter()
+            frames: List[torch.Tensor] = []
+            preceding_frame = None
+            first_kept_pts: Optional[int] = None
+            for frame in container.decode(stream):
+                pts = frame.pts
+                if pts is None:
+                    continue
+                if end_offset is not None and pts > end_offset:
+                    break
+                if pts < start_offset:
+                    # Seek lands on the previous keyframe; remember the frame
+                    # right before start so a start that falls between two
+                    # frame timestamps still gets covered (read_video parity).
+                    preceding_frame = frame
+                    continue
+                if first_kept_pts is None:
+                    first_kept_pts = pts
+                rgb = reformatter.reformat(frame, format="rgb24")
+                frames.append(torch.from_numpy(rgb.to_ndarray()))
+
+            if (
+                start_offset > 0
+                and preceding_frame is not None
+                and first_kept_pts != start_offset
+            ):
+                rgb = reformatter.reformat(preceding_frame, format="rgb24")
+                frames.insert(0, torch.from_numpy(rgb.to_ndarray()))
+
+            height = int(stream.height or 0)
+            width = int(stream.width or 0)
+
+        if frames:
+            vframes = torch.stack(frames).permute(0, 3, 1, 2).contiguous()
+        else:
+            vframes = torch.empty((0, 3, height, width), dtype=torch.uint8)
+        return vframes, None, info
+
     def _read_video_with_retry(
         self,
         path: str,
@@ -131,7 +215,11 @@ class LabeledVideoDataset(Dataset):
         last_error = None
         for attempt in range(1, int(attempts) + 1):
             try:
-                return read_video(path, **kwargs)
+                return self._decode_video_single_threaded(
+                    path,
+                    start_sec=kwargs.get("start_pts"),
+                    end_sec=kwargs.get("end_pts"),
+                )
             except BlockingIOError as exc:
                 last_error = exc
                 if attempt >= attempts:
@@ -397,12 +485,14 @@ class LabeledVideoDataset(Dataset):
                     }
                 )
 
-            filled_timeline = self._fill_tail_as_front(adjusted_timeline, total_frames)
+            filled_timeline = self._prepare_timeline_for_labels(
+                adjusted_timeline,
+                total_frames,
+                self._label_to_id,
+            )
             valid_segments = []
             for seg in filled_timeline:
-                label = normalize_label_to_4_class(str(seg["label"]))
-                if label not in self._label_to_id:
-                    continue
+                label = str(seg["label"])
                 valid_segments.append((seg, label))
 
             segment_records = []
@@ -842,6 +932,39 @@ class LabeledVideoDataset(Dataset):
 
         return filled
 
+    @staticmethod
+    def _prepare_timeline_for_labels(
+        timeline: List[Dict[str, Any]],
+        total_frames: int,
+        label_to_id: Dict[str, int],
+    ) -> List[Dict[str, Any]]:
+        """
+        Normalize timeline labels and apply the configured class policy.
+
+        If `front` is configured as a class, unlabeled gaps are filled as front.
+        For the 4-class direction task, `front` is absent and gaps are ignored.
+        """
+        if "front" in label_to_id:
+            timeline = LabeledVideoDataset._fill_tail_as_front(timeline, total_frames)
+
+        normalized: List[Dict[str, Any]] = []
+        for seg in timeline:
+            if seg is None or "start" not in seg or "end" not in seg or "label" not in seg:
+                continue
+
+            start = int(seg["start"])
+            end = int(seg["end"])
+            if end <= start:
+                continue
+
+            label = normalize_label_to_4_class(str(seg["label"]))
+            if label not in label_to_id:
+                continue
+
+            normalized.append({"start": start, "end": end, "label": label})
+
+        return normalized
+
     def split_frame_with_label(
         self,
         front_view: torch.Tensor,  # (T,C,H,W)
@@ -871,7 +994,8 @@ class LabeledVideoDataset(Dataset):
 
         T = int(front_view.shape[0])
 
-        # 1) Sort and clean labeled regions. Gaps are filled as front below.
+        # 1) Sort and clean labeled regions. The configured class policy decides
+        # whether gaps are filled as front or ignored.
         timeline = sorted(
             (
                 {
@@ -883,6 +1007,11 @@ class LabeledVideoDataset(Dataset):
                 if x is not None and "start" in x and "end" in x and "label" in x
             ),
             key=lambda d: (d["start"], d["end"]),
+        )
+        timeline = self._prepare_timeline_for_labels(
+            timeline,
+            total_frames=T,
+            label_to_id=self._label_to_id,
         )
 
         batch_front: List[torch.Tensor] = []
@@ -896,8 +1025,6 @@ class LabeledVideoDataset(Dataset):
             if e <= s:
                 continue
 
-            lb = normalize_label_to_4_class(lb)
-
             seg_front = self._apply_transform(front_view[s:e])
             seg_left = self._apply_transform(left_view[s:e])
             seg_right = self._apply_transform(right_view[s:e])
@@ -907,7 +1034,7 @@ class LabeledVideoDataset(Dataset):
             batch_right.append(seg_right)
 
             labels.append(lb)
-            mapped.append(self._label_to_id.get(lb, -1))  # unknown -> -1
+            mapped.append(self._label_to_id[lb])
 
         # Stack video tensors
         batch_front_t = torch.stack(batch_front, dim=0).permute(0, 2, 1, 3, 4)
@@ -942,6 +1069,16 @@ class LabeledVideoDataset(Dataset):
             ),
             key=lambda d: (d["start"], d["end"]),
         )
+        total_frames = 0
+        for kpts in kpts_by_view.values():
+            if kpts is not None:
+                total_frames = int(kpts.shape[0])
+                break
+        timeline = self._prepare_timeline_for_labels(
+            timeline,
+            total_frames=total_frames,
+            label_to_id=self._label_to_id,
+        )
 
         labels: List[str] = []
         mapped: List[int] = []
@@ -954,9 +1091,8 @@ class LabeledVideoDataset(Dataset):
             if e <= s:
                 continue
 
-            lb = normalize_label_to_4_class(lb)
             labels.append(lb)
-            mapped.append(self._label_to_id.get(lb, -1))
+            mapped.append(self._label_to_id[lb])
 
             for view in self.view_name:
                 kpts = kpts_by_view.get(view)
@@ -1331,7 +1467,11 @@ class LabeledVideoDataset(Dataset):
                 f"  [{seg_abs_start:5d}, {seg_abs_end:5d}) -> [{seg_rel_start:5d}, {seg_rel_end:5d}) {seg['label']:8s} INCLUDED"
             )
 
-        timeline_list = self._fill_tail_as_front(adjusted_timeline, total_frames)
+        timeline_list = self._prepare_timeline_for_labels(
+            adjusted_timeline,
+            total_frames,
+            self._label_to_id,
+        )
         logger.debug(f"  Final timeline segments: {len(timeline_list)}")
         # ==================== End Label Coordinate Conversion ====================
 

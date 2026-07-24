@@ -18,11 +18,11 @@ DEFAULT_OUTPUT_DIR = Path("outputs/annotation_visualizations")
 
 LABEL_8_TO_4 = {
     "left": "left",
-    "left_up": "left",
-    "left_down": "left",
+    "left_up": "up",
+    "left_down": "down",
     "right": "right",
-    "right_up": "right",
-    "right_down": "right",
+    "right_up": "up",
+    "right_down": "down",
     "up": "up",
     "down": "down",
 }

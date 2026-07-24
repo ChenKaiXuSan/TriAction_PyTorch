@@ -10,7 +10,8 @@ multi-view training routes for front, left, and right camera streams.
 - Person-wise cross validation with `GroupKFold`.
 - Single-view training for RGB, keypoint, and RGB+keypoint inputs.
 - Multi-view RGB training with early, mid, and late fusion strategies.
-- Backbone options for RGB streams: 3D CNN, temporal Transformer, and Mamba.
+- Backbone options for RGB streams: 3D CNN, temporal Transformer, Mamba,
+  VideoMAE, and ViViT.
 - Whole-video loading with chunking support to reduce memory pressure.
 - Tests for data loading, model selection, fusion paths, loss weighting, and
   TS-CVA components.
@@ -74,6 +75,7 @@ scikit-learn, NumPy, and the model-specific packages you need. For example:
 conda create -n triaction python=3.10
 conda activate triaction
 pip install torch torchvision pytorch-lightning hydra-core omegaconf scikit-learn pytest
+pip install transformers accelerate safetensors  # optional: VideoMAE / ViViT backbones
 ```
 
 Install CUDA-enabled PyTorch builds according to your GPU driver and CUDA
@@ -104,6 +106,12 @@ python -m project.main train.view=multi train.view_name='[front,left,right]' mod
 
 # Late fusion with a Transformer backbone
 python -m project.main train.view=multi train.view_name='[front,left,right]' model.input_type=rgb model.backbone=transformer model.fuse_method=late
+
+# Single-view RGB VideoMAE fine-tuning
+python -m project.main train.view=single train.view_name='[front]' model.input_type=rgb model.backbone=videomae
+
+# Late fusion with ViViT per-view classifiers
+python -m project.main train.view=multi train.view_name='[front,left,right]' model.input_type=rgb model.backbone=vivit model.fuse_method=late
 ```
 
 Logs and checkpoints are written under `logs/` by default and are intentionally
@@ -116,7 +124,12 @@ Important options in `configs/config.yaml`:
 - `train.view`: `single` or `multi`.
 - `train.view_name`: camera list, such as `[front]` or `[front,left,right]`.
 - `model.input_type`: `rgb`, `kpt`, or `rgb_kpt`.
-- `model.backbone`: `3dcnn`, `transformer`, or `mamba` for RGB streams.
+- `model.backbone`: `3dcnn`, `transformer`, `mamba`, `videomae`, or `vivit`
+  for RGB streams.
+- `model.hf_video_pretrained`: load Hugging Face pretrained weights for
+  `videomae` / `vivit`; set `false` for randomly initialized local debugging.
+- `model.videomae_model_name` and `model.vivit_model_name`: Hugging Face model
+  IDs used by those RGB backbones.
 - `model.fuse_method`: `add`, `mul`, `concat`, `avg`, `mid`, or `late`.
 - `data.max_video_frames`: chunk size for long videos; lower it if training
   runs out of memory.

@@ -7,8 +7,7 @@ Created Date: Friday March 22nd 2024
 Author: Kaixu Chen
 -----
 Comment:
-This module defines a cross-validation strategy based on GroupKFold,
-按照 person_id 进行分组划分，确保同一人的数据不会同时出现在训练集和验证集中。
+This module defines a single train/validation split.
 根据label文件夹中的标注文件，配对对应的视频文件，构建样本列表。
 划分结果会被保存到指定的index_mapping目录下的index.json文件中，以便后续加载使用。
 不实用person22，23的数据。
@@ -31,10 +30,7 @@ import random
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from sklearn.model_selection import GroupKFold
 from project.map_config import (
-    label_mapping_Dict,
-    environment_mapping_Dict,
     ENV_KEY_TO_FOLDER,
     CAM_NAMES,
     VideoSample,
@@ -47,8 +43,8 @@ class DefineCrossValidation(object):
       - build samples from:
           videos/{person}/{env_folder}/{cam}.mp4
           label/person_{person}_{day|night}_{high|low}_h265.json
-      - GroupKFold split by person_id
-      - no sampler
+      - produce one train/val split
+      - no sampler or K-fold loop
     """
 
     def __init__(self, config) -> None:
@@ -62,10 +58,9 @@ class DefineCrossValidation(object):
             config.paths.sam3d_results_path
         )  # e.g. /workspace/data/sam3d_body_results_right
 
-        self.fold_count: int = int(config.data.fold)
         self.index_mapping: Path = Path(
             config.paths.index_mapping
-        )  # folder to save/load index.json
+        )  # folder to save/load index json
 
         # Magic move configuration
         self.enable_magic_move: bool = bool(getattr(config.data, "magic_move", False))
@@ -151,66 +146,42 @@ class DefineCrossValidation(object):
                 samples.append(s)
         return samples
 
-    def split_by_person(
-        self, samples: List[VideoSample]
-    ) -> Dict[int, Dict[str, List[VideoSample]]]:
-        """
-        GroupKFold by person_id
-        """
-        if self.fold_count <= 1:
-            # fold=1 时，给一个“全量train + 空val”或你也可以改成 train_test_split
-            return {0: {"train": samples, "val": []}}
-
-        groups = [s.person_id for s in samples]
-        indices = list(range(len(samples)))
-
-        gkf = GroupKFold(n_splits=self.fold_count)
-        fold_dict: Dict[int, Dict[str, List[VideoSample]]] = {}
-
-        for fold, (tr_idx, va_idx) in enumerate(gkf.split(indices, groups=groups)):
-            train_samples = [samples[i] for i in tr_idx]
-            val_samples = [samples[i] for i in va_idx]
-            fold_dict[fold] = {"train": train_samples, "val": val_samples}
-
-        return fold_dict
+    @staticmethod
+    def build_single_split(samples: List[VideoSample]) -> Dict[str, List[VideoSample]]:
+        """Use all collected samples as the initial single training split."""
+        return {"train": samples, "val": []}
 
     def magic_move(
         self,
-        fold_samples: Dict[int, Dict[str, List[VideoSample]]],
+        dataset_split: Dict[str, List[VideoSample]],
         ratio: float = 0.1,
         seed: int = 0,
-    ) -> Dict[int, Dict[str, List[VideoSample]]]:
+    ) -> Dict[str, List[VideoSample]]:
         """
-        Move a portion of train samples into val for each fold.
+        Move a portion of train samples into validation for the single split.
         """
         if ratio <= 0:
-            return fold_samples
+            return dataset_split
 
         rng = random.Random(seed)
-        updated: Dict[int, Dict[str, List[VideoSample]]] = {}
+        train_samples = list(dataset_split.get("train", []))
+        val_samples = list(dataset_split.get("val", []))
 
-        for fold, splits in fold_samples.items():
-            train_samples = list(splits.get("train", []))
-            val_samples = list(splits.get("val", []))
+        if len(train_samples) == 0:
+            return {"train": train_samples, "val": val_samples}
 
-            if len(train_samples) == 0:
-                updated[fold] = {"train": train_samples, "val": val_samples}
-                continue
+        move_count = int(len(train_samples) * ratio)
+        if move_count <= 0 and len(train_samples) > 1:
+            move_count = 1
 
-            move_count = int(len(train_samples) * ratio)
-            if move_count <= 0 and len(train_samples) > 1:
-                move_count = 1
+        rng.shuffle(train_samples)
+        moved = train_samples[:move_count]
+        remaining = train_samples[move_count:]
 
-            rng.shuffle(train_samples)
-            moved = train_samples[:move_count]
-            remaining = train_samples[move_count:]
-
-            updated[fold] = {
-                "train": remaining,
-                "val": val_samples + moved,
-            }
-
-        return updated
+        return {
+            "train": remaining,
+            "val": val_samples + moved,
+        }
 
     # --------- main entry ---------
     def prepare(self):
@@ -224,8 +195,36 @@ class DefineCrossValidation(object):
                 f"  video structure: videos/XX/(夜多|夜少|昼多|昼少)/(front|right|left).mp4"
             )
 
-        fold_samples = self.split_by_person(samples)
-        return fold_samples
+        return self.build_single_split(samples)
+
+    @staticmethod
+    def _serialize_sample(sample: VideoSample) -> Dict[str, Any]:
+        return {
+            "person_id": sample.person_id,
+            "env_folder": sample.env_folder,
+            "env_key": sample.env_key,
+            "label_path": str(sample.label_path),
+            "videos": {k: str(v) for k, v in sample.videos.items()},
+            "sam3d_kpts": {k: str(v) for k, v in sample.sam3d_kpts.items()}
+            if sample.sam3d_kpts
+            else None,
+        }
+
+    @staticmethod
+    def _deserialize_sample(item: Dict[str, Any]) -> VideoSample:
+        sam3d_kpts = (
+            {kk: Path(vv) for kk, vv in item["sam3d_kpts"].items()}
+            if item.get("sam3d_kpts")
+            else None
+        )
+        return VideoSample(
+            person_id=item["person_id"],
+            env_folder=item["env_folder"],
+            env_key=item["env_key"],
+            label_path=Path(item["label_path"]),
+            videos={kk: Path(vv) for kk, vv in item["videos"].items()},
+            sam3d_kpts=sam3d_kpts,
+        )
 
     def __call__(self, *args: Any, **kwds: Any) -> Any:
         """
@@ -239,77 +238,40 @@ class DefineCrossValidation(object):
         magic_move_ratio = self.magic_move_ratio
         magic_move_seed = self.magic_move_seed
 
-        index_name = "index_magicmove.json" if enable_magic_move else "index.json"
+        index_name = (
+            "index_single_magicmove.json" if enable_magic_move else "index_single.json"
+        )
         index_file = target_dir / index_name
 
         if not index_file.exists():
-            fold_samples = self.prepare()
+            dataset_split = self.prepare()
             if enable_magic_move:
-                fold_samples = self.magic_move(
-                    fold_samples, ratio=magic_move_ratio, seed=magic_move_seed
+                dataset_split = self.magic_move(
+                    dataset_split, ratio=magic_move_ratio, seed=magic_move_seed
                 )
 
             # serialize
-            serial: Dict[str, Any] = {}
-            for fold, d in fold_samples.items():
-                serial[str(fold)] = {
-                    "train": [
-                        {
-                            "person_id": s.person_id,
-                            "env_folder": s.env_folder,
-                            "env_key": s.env_key,
-                            "label_path": str(s.label_path),
-                            "videos": {k: str(v) for k, v in s.videos.items()},
-                            "sam3d_kpts": {k: str(v) for k, v in s.sam3d_kpts.items()}
-                            if s.sam3d_kpts
-                            else None,
-                        }
-                        for s in d["train"]
-                    ],
-                    "val": [
-                        {
-                            "person_id": s.person_id,
-                            "env_folder": s.env_folder,
-                            "env_key": s.env_key,
-                            "label_path": str(s.label_path),
-                            "videos": {k: str(v) for k, v in s.videos.items()},
-                            "sam3d_kpts": {k: str(v) for k, v in s.sam3d_kpts.items()}
-                            if s.sam3d_kpts
-                            else None,
-                        }
-                        for s in d["val"]
-                    ],
-                }
+            serial: Dict[str, Any] = {
+                "train": [self._serialize_sample(s) for s in dataset_split["train"]],
+                "val": [self._serialize_sample(s) for s in dataset_split["val"]],
+            }
 
             with open(index_file, "w", encoding="utf-8") as f:
                 json.dump(serial, f, ensure_ascii=False, indent=2)
 
-            return fold_samples
+            return dataset_split
 
         # load
         with open(index_file, "r", encoding="utf-8") as f:
             serial = json.load(f)
 
-        fold_samples: Dict[int, Dict[str, List[VideoSample]]] = {}
-        for kfold, d in serial.items():
-            fold = int(kfold)
-            fold_samples[fold] = {"train": [], "val": []}
-            for split in ["train", "val"]:
-                for item in d[split]:
-                    sam3d_kpts = (
-                        {kk: Path(vv) for kk, vv in item["sam3d_kpts"].items()}
-                        if item.get("sam3d_kpts")
-                        else None
-                    )
-                    fold_samples[fold][split].append(
-                        VideoSample(
-                            person_id=item["person_id"],
-                            env_folder=item["env_folder"],
-                            env_key=item["env_key"],
-                            label_path=Path(item["label_path"]),
-                            videos={kk: Path(vv) for kk, vv in item["videos"].items()},
-                            sam3d_kpts=sam3d_kpts,
-                        )
-                    )
+        if "train" not in serial or "val" not in serial:
+            raise ValueError(
+                f"{index_file} is not a single-split index. "
+                "Delete it and regenerate the dataset index."
+            )
 
-        return fold_samples
+        return {
+            "train": [self._deserialize_sample(item) for item in serial["train"]],
+            "val": [self._deserialize_sample(item) for item in serial["val"]],
+        }

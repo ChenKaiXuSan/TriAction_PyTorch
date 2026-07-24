@@ -8,12 +8,13 @@ GPU_SLOTS="${GPU_SLOTS:-0 1}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 ACCUMULATE_GRAD_BATCHES="${ACCUMULATE_GRAD_BATCHES:-1}"
 PRECISION="${PRECISION:-16-mixed}"
-NUM_WORKERS="${NUM_WORKERS:-2}"
-VAL_NUM_WORKERS="${VAL_NUM_WORKERS:-1}"
-TEST_NUM_WORKERS="${TEST_NUM_WORKERS:-1}"
-PREFETCH_FACTOR="${PREFETCH_FACTOR:-1}"
+# Video decode is the training bottleneck (2 workers kept both GPUs at ~0%
+# utilization); 6 workers per job fits 32 cores / 62GB RAM with two GPU queues.
+NUM_WORKERS="${NUM_WORKERS:-6}"
+VAL_NUM_WORKERS="${VAL_NUM_WORKERS:-2}"
+TEST_NUM_WORKERS="${TEST_NUM_WORKERS:-2}"
+PREFETCH_FACTOR="${PREFETCH_FACTOR:-2}"
 MAX_EPOCHS="${MAX_EPOCHS:-50}"
-FOLD="${FOLD:-2}"
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
 SKIP_DONE="${SKIP_DONE:-0}"
 
@@ -51,7 +52,7 @@ run_exp() {
 
   echo
   echo "===== ${exp_id} ====="
-  echo "GPU=${gpu_id} batch_size=${BATCH_SIZE} accumulate=${ACCUMULATE_GRAD_BATCHES} precision=${PRECISION} workers=${NUM_WORKERS} val_workers=${VAL_NUM_WORKERS} test_workers=${TEST_NUM_WORKERS} prefetch=${PREFETCH_FACTOR} epochs=${MAX_EPOCHS} fold=${FOLD}"
+  echo "GPU=${gpu_id} batch_size=${BATCH_SIZE} accumulate=${ACCUMULATE_GRAD_BATCHES} precision=${PRECISION} workers=${NUM_WORKERS} val_workers=${VAL_NUM_WORKERS} test_workers=${TEST_NUM_WORKERS} prefetch=${PREFETCH_FACTOR} epochs=${MAX_EPOCHS}"
 
   local cmd=(
     conda run -n "${CONDA_ENV}" "${PYTHON_BIN}" -m project.main
@@ -64,7 +65,6 @@ run_exp() {
     "train.max_epochs=${MAX_EPOCHS}" \
     "train.precision=${PRECISION}" \
     "train.accumulate_grad_batches=${ACCUMULATE_GRAD_BATCHES}" \
-    "data.fold=${FOLD}" \
     experiment="${exp_id}" \
     "$@"
   )
@@ -110,11 +110,13 @@ dispatch_queues() {
 
     local log_file="${LOG_ROOT}/gpu_${gpu_id}.log"
     (
-      set -euo pipefail
+      set -uo pipefail
       while IFS= read -r cmdline; do
         echo
         echo "===== GPU ${gpu_id}: ${cmdline} ====="
-        eval "${cmdline}"
+        if ! eval "${cmdline}"; then
+          echo "!!!!! GPU ${gpu_id} FAILED (continuing with next job): ${cmdline}"
+        fi
       done < "${queue_file}"
     ) > "${log_file}" 2>&1 &
     pids+=("$!")
@@ -140,10 +142,8 @@ dispatch_queues() {
 run_smoke() {
   local old_batch_size="${BATCH_SIZE}"
   local old_epochs="${MAX_EPOCHS}"
-  local old_fold="${FOLD}"
   BATCH_SIZE="${SMOKE_BATCH_SIZE:-4}"
   MAX_EPOCHS="${SMOKE_MAX_EPOCHS:-1}"
-  FOLD="${SMOKE_FOLD:-1}"
   run_exp "S0_smoke_single_front_rgb_3dcnn" \
     train.view=single \
     "train.view_name=[front]" \
@@ -151,7 +151,6 @@ run_smoke() {
     model.backbone=3dcnn
   BATCH_SIZE="${old_batch_size}"
   MAX_EPOCHS="${old_epochs}"
-  FOLD="${old_fold}"
 }
 
 run_single_view() {
@@ -171,7 +170,8 @@ run_modality() {
     "train.view_name=[${view}]" \
     model.input_type=rgb \
     model.backbone=3dcnn
-  run_exp "M_${view}_kpt" \
+  # Keypoint-only training reads small npz files, not video: fewer workers needed.
+  NUM_WORKERS=4 run_exp "M_${view}_kpt" \
     train.view=single \
     "train.view_name=[${view}]" \
     model.input_type=kpt

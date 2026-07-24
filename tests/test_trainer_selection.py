@@ -18,6 +18,15 @@ def test_select_single_trainer_rgb_3dcnn():
     assert trainer_cls is SingleModalityClassifierTrainer
 
 
+def test_select_single_trainer_accepts_hf_rgb_backbones():
+    for backbone in ("videomae", "vivit"):
+        hparams = OmegaConf.create(
+            {"train": {"view": "single"}, "model": {"input_type": "rgb", "backbone": backbone}}
+        )
+        trainer_cls = select_single_trainer_cls(hparams)
+        assert trainer_cls is SingleModalityClassifierTrainer
+
+
 def test_select_multi_trainer_early_fusion():
     hparams = OmegaConf.create(
         {
@@ -61,6 +70,22 @@ def test_select_multi_trainer_late_fusion():
     )
     trainer_cls = select_multi_trainer_cls(hparams)
     assert trainer_cls is LateFusion3DCNNTrainer
+
+
+def test_select_multi_trainer_late_fusion_accepts_hf_rgb_backbones():
+    for backbone in ("videomae", "vivit"):
+        hparams = OmegaConf.create(
+            {
+                "train": {"view": "multi"},
+                "model": {
+                    "input_type": "rgb",
+                    "backbone": backbone,
+                    "fuse_method": "late",
+                },
+            }
+        )
+        trainer_cls = select_multi_trainer_cls(hparams)
+        assert trainer_cls is LateFusion3DCNNTrainer
 
 
 def test_early_fusion_trainer_uses_loss_lr_without_optimizer(monkeypatch):

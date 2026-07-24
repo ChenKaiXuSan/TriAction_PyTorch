@@ -26,7 +26,6 @@ loss:
     right: 1.0
     down: 1.0
     up: 4.0
-    front: 0.2
 
 paths:
   root_path: /home/data/xchen/drive/multi_view_driver_action
@@ -52,9 +51,6 @@ data:
   segment_shuffle_seed: 42
   batch_size: 16 # segment batch size when batch_unit=segment
 
-  # fold: 5 # the fold number of the cross validation
-  fold: 2 # the fold number of the cross validation, for 5-class setting, we use fold 0-4; for 3-class setting, we
-
   magic_move: true              # 是否启用 magic_move
   magic_move_ratio: 0.1         # 比例（默认 0.1 = 10%）
   magic_move_seed: 0            # 随机种子（默认 0）
@@ -72,10 +68,10 @@ data:
 
 model:
   input_type: rgb # rgb | kpt | rgb_kpt
-  backbone: 3dcnn # choices=[3dcnn, transformer, mamba], help='the backbone of the model'
+  backbone: 3dcnn # choices=[3dcnn, transformer, mamba, videomae, vivit], help='the backbone of the model'
   kpt_hidden_dim: 128
   kpt_dropout: 0.1
-  model_class_num: 5 # 5-class: left/right/down/up/front; unannotated frames are front
+  model_class_num: 4 # 4-class: left/right/down/up; unlabeled gaps are ignored
   use_side_heads: True # whether to use side heads for intermediate supervision
   fusion_mode: logit_mean # logit_mean | prob_mean | feature_mean | feature_concat
   modality_fusion: concat # concat | mean (for rgb+kpt)
@@ -89,6 +85,14 @@ model:
   mamba_dim: 256
   mamba_layers: 2
   mamba_dropout: 0.1
+  hf_video_pretrained: true
+  hf_video_ignore_mismatched_sizes: true
+  hf_video_model_name: null
+  hf_video_revision: null
+  videomae_model_name: MCG-NJU/videomae-base-finetuned-kinetics
+  videomae_model_revision: null
+  vivit_model_name: google/vivit-b-16x2-kinetics400
+  vivit_model_revision: null
 
   fuse_method: mid # add, mul, concat, none, late, avg
 
