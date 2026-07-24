@@ -113,3 +113,37 @@ def test_early_fusion_trainer_uses_loss_lr_without_optimizer(monkeypatch):
     trainer = EarlyFusion3DCNNTrainer(hparams)
 
     assert trainer.lr == 0.0001
+
+
+def test_select_multi_trainer_mv_vivit():
+    from project.trainer.multi.mv.train_mv_vivit import MVViVitTrainer
+
+    hparams = OmegaConf.create(
+        {
+            "train": {"view": "multi"},
+            "model": {
+                "input_type": "rgb",
+                "backbone": "vivit",
+                "fuse_method": "mv_vivit",
+            },
+        }
+    )
+    trainer_cls = select_multi_trainer_cls(hparams)
+    assert trainer_cls is MVViVitTrainer
+
+
+def test_select_multi_trainer_mv_vivit_rejects_other_backbones():
+    import pytest
+
+    hparams = OmegaConf.create(
+        {
+            "train": {"view": "multi"},
+            "model": {
+                "input_type": "rgb",
+                "backbone": "3dcnn",
+                "fuse_method": "mv_vivit",
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="backbone='vivit'"):
+        select_multi_trainer_cls(hparams)

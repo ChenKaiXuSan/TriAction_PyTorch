@@ -61,6 +61,7 @@ python -m project.eval --config-dir pegasus --config-name pegasus
 | T 消融 | `T_mid_heads8` | multi 3-view | rgb | 3dcnn | mid | 注意力头数 8 |
 | T 消融 | `T_mid_heads2` | multi 3-view | rgb | 3dcnn | mid | 注意力头数 2 |
 | E 附加 | `E_noes_single_front_rgb_3dcnn` | single front | rgb | 3dcnn | – | 无 early stopping,全量 50 epochs 参照(单独 qsub 提交) |
+| N 新架构 | `N_multi_mv_vivit` | multi 3-view | rgb | vivit(冻结) | mv_vivit | MV-ViViT:冻结 ViViT + 跨视角 token 注意力融合,`qsub_all.sh mv --run` |
 
 公共设置：50 epochs、precision `bf16-mixed`（H100 原生 bfloat16）、非 HF 实验 batch 16 / accum 1 / 8 帧、`train.gpu=[0]`（每作业 1 GPU 节点）。所有参数可用环境变量覆盖后 qsub，如 `MAX_EPOCHS=30 qsub pegasus/run_f_multi_mid.sh`（可用变量见 `run_common.sh` 顶部）。
 

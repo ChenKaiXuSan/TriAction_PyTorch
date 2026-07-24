@@ -94,7 +94,16 @@ model:
   vivit_model_name: google/vivit-b-16x2-kinetics400
   vivit_model_revision: null
 
-  fuse_method: mid # add, mul, concat, none, late, avg
+  fuse_method: mid # add, mul, concat, none, late, avg, mid, mv_vivit
+
+  # MV-ViViT (fuse_method=mv_vivit, backbone=vivit): frozen shared ViViT +
+  # trainable cross-view token fusion. Design choices follow the 2026-07 ablations.
+  mv_vivit_fusion_layers: 2
+  mv_vivit_fusion_heads: 8
+  mv_vivit_fusion_ff_dim: 2048
+  mv_vivit_dropout: 0.1
+  mv_vivit_use_view_embedding: true
+  mv_vivit_freeze_backbone: true
 
   # TS-CVA hyperparameters (all optional, defaults are shown)
   ts_cva_shared_backbone: true          # Share backbone across views (recommended)

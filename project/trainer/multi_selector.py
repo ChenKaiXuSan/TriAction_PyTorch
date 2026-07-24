@@ -37,6 +37,7 @@ from project.trainer.multi.late.train_late_fusion import (
     LateFusionMambaTrainer,
 )
 from project.trainer.multi.mid.train_multi_ts_cva import MultiTSCVATrainer
+from project.trainer.multi.mv.train_mv_vivit import MVViVitTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,14 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 EARLY_FUSION_METHODS = {"add", "mul", "concat", "avg"}
-MID_FUSION_METHODS = {"mid"}
+MID_FUSION_METHODS = {"mid", "mv_vivit"}
 LATE_FUSION_METHODS = {"late"}
+
+# fuse_method -> backbone it requires (mid-fusion family)
+MID_FUSION_REQUIRED_BACKBONE = {
+    "mid": "3dcnn",
+    "mv_vivit": "vivit",
+}
 
 
 # ============================================================================
@@ -60,6 +67,7 @@ EARLY_FUSION_TRAINERS = {
 
 MID_FUSION_TRAINERS = {
     "mid": MultiTSCVATrainer,
+    "mv_vivit": MVViVitTrainer,
 }
 
 LATE_FUSION_TRAINERS = {
@@ -205,12 +213,12 @@ def select_multi_trainer_cls(hparams) -> Type:
             )
     
     elif strategy == "mid":
-        # Mid-fusion only supports 3D CNN backbone
-        if backbone != "3dcnn":
+        # each mid-fusion method is tied to one backbone (mid -> 3dcnn, mv_vivit -> vivit)
+        required_backbone = MID_FUSION_REQUIRED_BACKBONE.get(fuse_method)
+        if required_backbone is not None and backbone != required_backbone:
             raise ValueError(
-                f"Mid-fusion (fuse_method='{fuse_method}') requires backbone='3dcnn', "
-                f"got backbone='{backbone}'. "
-                f"Mid-fusion methods only work with 3D CNN architecture."
+                f"Mid-fusion (fuse_method='{fuse_method}') requires "
+                f"backbone='{required_backbone}', got backbone='{backbone}'."
             )
         trainer_cls = MID_FUSION_TRAINERS.get(fuse_method)
         if trainer_cls is None:

@@ -29,6 +29,7 @@ Modes:
   fusion         F: multi-view add/concat/avg/mid/late with 3dcnn
   late_backbone  L: late fusion with transformer/mamba/videomae/vivit (3dcnn = F late)
   ts_cva         T: TS-CVA ablations (full model = F mid)
+  mv             N: MV-ViViT (frozen ViViT + cross-view token fusion)
   noes           no-early-stopping full-length variants of the matrix (21 jobs;
                  front rgb 3dcnn is covered by run_e_noes_single_front_rgb_3dcnn.sh)
   all            all formal jobs (everything except smoke and noes)
@@ -78,6 +79,10 @@ late_backbone_scripts=(
 
 noes_scripts=($(cd "$(dirname "$0")" && ls run_noes_*.sh 2>/dev/null))
 
+mv_scripts=(
+    run_n_mv_vivit.sh
+)
+
 ts_cva_scripts=(
     run_t_mid_no_gated_aggregation.sh
     run_t_mid_no_view_embedding.sh
@@ -107,6 +112,9 @@ case "$MODE" in
     ts_cva)
         scripts=("${ts_cva_scripts[@]}")
         ;;
+    mv)
+        scripts=("${mv_scripts[@]}")
+        ;;
     noes)
         scripts=("${noes_scripts[@]}")
         ;;
@@ -118,6 +126,7 @@ case "$MODE" in
             "${fusion_scripts[@]}"
             "${late_backbone_scripts[@]}"
             "${ts_cva_scripts[@]}"
+            "${mv_scripts[@]}"
         )
         ;;
     -h|--help|help)
