@@ -143,14 +143,25 @@ def train(hparams: DictConfig, dataset_idx):
         save_top_k=2,
     )
 
-    # define the early stop.
-    early_stopping = EarlyStopping(
-        monitor="val/loss",
-        patience=5,
-        mode="min",
-    )
-
     lr_monitor = LearningRateMonitor(logging_interval="step")
+
+    callbacks = [
+        progress_bar,
+        rich_model_summary,
+        model_check_point,
+        lr_monitor,
+        DeviceStatsMonitor(),  # monitor the device stats.
+    ]
+
+    # early stopping is optional: train.early_stopping=false runs all max_epochs
+    if getattr(hparams.train, "early_stopping", True):
+        callbacks.append(
+            EarlyStopping(
+                monitor="val/loss",
+                patience=int(getattr(hparams.train, "early_stopping_patience", 5)),
+                mode="min",
+            )
+        )
 
     trainer = Trainer(
         devices=parse_train_devices(hparams.train.gpu),
@@ -165,14 +176,7 @@ def train(hparams: DictConfig, dataset_idx):
         limit_test_batches=getattr(hparams.train, "limit_test_batches", 1.0),
         logger=[tb_logger, csv_logger],
         check_val_every_n_epoch=1,
-        callbacks=[
-            progress_bar,
-            rich_model_summary,
-            model_check_point,
-            early_stopping,
-            lr_monitor,
-            DeviceStatsMonitor(),  # monitor the device stats.
-        ],
+        callbacks=callbacks,
     )
 
     trainer.fit(classification_module, data_module)

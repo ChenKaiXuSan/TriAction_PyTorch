@@ -107,6 +107,8 @@ model:
 train:
   # Training config
   max_epochs: 50 # numer of epochs of training
+  early_stopping: true # false runs all max_epochs without val/loss-based early stop
+  early_stopping_patience: 5
   precision: 16-mixed # reduce 3D CNN activation memory on RTX 3090
   accumulate_grad_batches: 1 # effective segment batch = data.batch_size * accumulate_grad_batches
   limit_train_batches: 1.0 # set to 1 for quick smoke/debug runs
