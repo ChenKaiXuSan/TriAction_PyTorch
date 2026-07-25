@@ -104,6 +104,9 @@ model:
   mv_vivit_dropout: 0.1
   mv_vivit_use_view_embedding: true
   mv_vivit_freeze_backbone: true
+  mv_vivit_unfreeze_last_layers: 0 # >0 finetunes the last N ViViT layers (reduced lr)
+  mv_vivit_backbone_lr_scale: 0.1 # lr multiplier for unfrozen backbone layers
+  mv_vivit_view_logit_ensemble: false # average fusion logits with per-view aux logits
 
   # TS-CVA hyperparameters (all optional, defaults are shown)
   ts_cva_shared_backbone: true          # Share backbone across views (recommended)

@@ -56,9 +56,25 @@ class MVViVit(nn.Module):
             config.image_size // tubelet[2]
         )
 
+        # partial finetuning: keep the last N encoder layers (+ final layernorm)
+        # trainable while the rest of the backbone stays frozen
+        self.unfreeze_last = int(
+            getattr(model_cfg, "mv_vivit_unfreeze_last_layers", 0)
+        )
+        if self.unfreeze_last < 0:
+            raise ValueError("mv_vivit_unfreeze_last_layers must be >= 0")
+        self.unfreeze_last = min(
+            self.unfreeze_last, len(self._encoder_layers(self.backbone))
+        )
+
         if self.freeze_backbone:
             self.backbone.requires_grad_(False)
-            self.backbone.eval()
+            if self.unfreeze_last > 0:
+                for layer in self._encoder_layers(self.backbone)[-self.unfreeze_last :]:
+                    layer.requires_grad_(True)
+                self.backbone.layernorm.requires_grad_(True)
+            else:
+                self.backbone.eval()
 
         self.use_view_embedding = bool(
             getattr(model_cfg, "mv_vivit_use_view_embedding", True)
@@ -88,6 +104,16 @@ class MVViVit(nn.Module):
         )
         self.norm = nn.LayerNorm(self.feature_dim)
         self.head = nn.Linear(self.feature_dim, self.num_classes)
+
+        # optional hybrid: average the fusion logits with per-view logits from a
+        # shared auxiliary head (late-fusion-style ensemble inside the model)
+        self.view_logit_ensemble = bool(
+            getattr(model_cfg, "mv_vivit_view_logit_ensemble", False)
+        )
+        if self.view_logit_ensemble:
+            self.view_head = nn.Linear(self.feature_dim, self.num_classes)
+        else:
+            self.view_head = None
 
     @staticmethod
     def _build_backbone(model_cfg):
@@ -125,16 +151,46 @@ class MVViVit(nn.Module):
         super().train(mode)
         if self.freeze_backbone:
             self.backbone.eval()
+            if self.unfreeze_last > 0:
+                for layer in self._encoder_layers(self.backbone)[-self.unfreeze_last :]:
+                    layer.train(mode)
         return self
+
+    @staticmethod
+    def _encoder_layers(backbone):
+        # transformers >= 5 exposes VivitModel.layers; older versions encoder.layer
+        if hasattr(backbone, "layers"):
+            return backbone.layers
+        return backbone.encoder.layer
+
+    @staticmethod
+    def _layer_output(layer_out):
+        # VivitLayer.forward returns a Tensor in recent transformers, a tuple in older ones
+        return layer_out[0] if isinstance(layer_out, tuple) else layer_out
+
+    def _backbone_tokens(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        fully_frozen = self.freeze_backbone and self.unfreeze_last == 0
+        if fully_frozen:
+            with torch.no_grad():
+                return self.backbone(pixel_values=pixel_values).last_hidden_state
+        if not self.freeze_backbone:
+            return self.backbone(pixel_values=pixel_values).last_hidden_state
+
+        # partial finetune: frozen prefix without autograd, trainable suffix with it
+        layers = self._encoder_layers(self.backbone)
+        split = len(layers) - self.unfreeze_last
+        with torch.no_grad():
+            hidden = self.backbone.embeddings(pixel_values)
+            for layer in layers[:split]:
+                hidden = self._layer_output(layer(hidden))
+        for layer in layers[split:]:
+            hidden = self._layer_output(layer(hidden))
+        return self.backbone.layernorm(hidden)
 
     def _encode_view(self, video: torch.Tensor) -> torch.Tensor:
         """(B, C, T, H, W) -> (B, 1 + tubelets, D): CLS + per-tubelet pooled tokens."""
         pixel_values = video.float().permute(0, 2, 1, 3, 4).contiguous()
-        if self.freeze_backbone:
-            with torch.no_grad():
-                hidden = self.backbone(pixel_values=pixel_values).last_hidden_state
-        else:
-            hidden = self.backbone(pixel_values=pixel_values).last_hidden_state
+        hidden = self._backbone_tokens(pixel_values)
 
         cls_token = hidden[:, :1]
         patch_tokens = hidden[:, 1:]
@@ -164,4 +220,11 @@ class MVViVit(nn.Module):
         sequence = torch.cat(view_tokens, dim=1)
         fused = self.cross_view_fusion(sequence)
         pooled = fused.mean(dim=1)
-        return self.head(self.norm(pooled))
+        logits = self.head(self.norm(pooled))
+
+        if self.view_head is not None:
+            view_logits = torch.stack(
+                [self.view_head(self.norm(t.mean(dim=1))) for t in view_tokens]
+            ).mean(dim=0)
+            logits = 0.5 * logits + 0.5 * view_logits
+        return logits

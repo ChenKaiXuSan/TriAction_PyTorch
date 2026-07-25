@@ -34,6 +34,9 @@ class MVViVitTrainer(LightningModule):
         from project.models.mv_vivit import MVViVit
 
         self.lr = float(hparams.loss.lr)
+        self.backbone_lr_scale = float(
+            getattr(hparams.model, "mv_vivit_backbone_lr_scale", 0.1)
+        )
         self.num_classes = int(hparams.model.model_class_num)
         view_names = getattr(hparams.train, "view_name", ["front", "left", "right"])
         if isinstance(view_names, str):
@@ -96,8 +99,21 @@ class MVViVitTrainer(LightningModule):
         self._shared_step(batch, stage="test")
 
     def configure_optimizers(self):
-        trainable = [p for p in self.parameters() if p.requires_grad]
-        optimizer = torch.optim.Adam(trainable, lr=self.lr)
+        # partially unfrozen backbone layers train at a reduced lr
+        backbone_params, fusion_params = [], []
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if name.startswith("backbone."):
+                backbone_params.append(param)
+            else:
+                fusion_params.append(param)
+        param_groups = [{"params": fusion_params}]
+        if backbone_params:
+            param_groups.append(
+                {"params": backbone_params, "lr": self.lr * self.backbone_lr_scale}
+            )
+        optimizer = torch.optim.Adam(param_groups, lr=self.lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=self.trainer.estimated_stepping_batches,
