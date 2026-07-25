@@ -142,12 +142,13 @@ dataloader 死锁,qdel 重提后正常)。best ckpt 仍在 epoch 5 附近,
 | **N2_mv_vivit_unfreeze4** | 解冻末 4 层(backbone lr ×0.1) | **56.9%** 🥇 | **51.2%** |
 | N2_mv_vivit_ensemble | + 视角 logit 五五混合 | 53.0% | 45.8% |
 | N2_mv_vivit_unfreeze4_reg | 解冻 + 1 层融合 + dropout 0.3 | 52.4% | 47.7% |
-| N2_mv_vivit_reg | 1 层融合 + dropout 0.3(冻结) | (重跑中,首跑在 ep35 处挂死) | |
+| N2_mv_vivit_reg | 1 层融合 + dropout 0.3(冻结) | 49.0% | 42.8% |
 
 **N2_mv_vivit_unfreeze4 以 56.9% 成为全部实验的新最优**,超过 late-vivit(56.7%),
 可训练参数仅 ~39M(对方 ~260M)且共享单编码器。结论:MV-ViViT 的性能瓶颈是
 冻结特征而非融合机制;部分微调补齐后,跨视角注意力 + 参数效率的组合成立。
-强正则(dropout 0.3、单层融合)与 logit 混合均为负收益,不采用。
+强正则(dropout 0.3、单层融合)与 logit 混合均为负收益,不采用
+(纯正则版 49.0% 比冻结基线还低 5 点,收缩融合容量明显有害)。
 best ckpt 仍在 epoch ~5,进一步的方向是解冻层数扫描与更小 backbone lr。
 
 ## 已知问题
