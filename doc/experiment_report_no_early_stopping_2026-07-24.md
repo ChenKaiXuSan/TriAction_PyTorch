@@ -127,11 +127,12 @@ val/loss 在 epoch 5 后即过拟合(best ckpt 也取自 epoch 5),融合容量/�
 | **N2_mv_vivit_unfreeze4** | 解冻末 4 层(0.1× lr) | **56.9%** 🥇 | **51.2%** |
 | N2_mv_vivit_ensemble | 融合 logits ⊕ 视角辅助头 logits | 53.0% | 45.8% |
 | N2_mv_vivit_unfreeze4_reg | 解冻 + dropout 0.3 + 1 层融合 | 52.4% | 47.7% |
-| N2_mv_vivit_reg | dropout 0.3 + 1 层融合(冻结) | 首跑 dataloader 死锁,重跑中 | |
+| N2_mv_vivit_reg | dropout 0.3 + 1 层融合(冻结) | 49.0% | 42.8% |
 
 **`N2_mv_vivit_unfreeze4`(56.9%)超过 late-vivit(56.7%),成为全部实验的新最优**,
 可训练参数 ~39M,仅为原冠军(~260M)的 15%。结论:差距确实来自 backbone 微调;
-强正则与 logit 混合叠加后均为负收益。best ckpt 仍在 epoch 5 附近,
+强正则与 logit 混合均为负收益(reg 冻结版 49.0%,较 N1 基线 −5.0;其首跑遭遇
+dataloader 死锁,qdel 重提后正常)。best ckpt 仍在 epoch 5 附近,
 解冻深度扫描(2/6/8 层)是下一个杠杆。
 
 ### MV-ViViT 第 2 轮(2026-07-25,N2_*)
