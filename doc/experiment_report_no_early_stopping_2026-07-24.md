@@ -120,6 +120,21 @@ mean pooling;`model.fuse_method=mv_vivit`),仅 11M 可训练参数,全量 50 epo
 val/loss 在 epoch 5 后即过拟合(best ckpt 也取自 epoch 5),融合容量/正则化和
 部分解冻 backbone 是下一步方向。
 
+### MV-ViViT 第 2 轮(2026-07-25,N2_*)
+
+| 变体 | 配置 | acc | F1 |
+|---|---|---|---|
+| **N2_mv_vivit_unfreeze4** | 解冻末 4 层(backbone lr ×0.1) | **56.9%** 🥇 | **51.2%** |
+| N2_mv_vivit_ensemble | + 视角 logit 五五混合 | 53.0% | 45.8% |
+| N2_mv_vivit_unfreeze4_reg | 解冻 + 1 层融合 + dropout 0.3 | 52.4% | 47.7% |
+| N2_mv_vivit_reg | 1 层融合 + dropout 0.3(冻结) | (重跑中,首跑在 ep35 处挂死) | |
+
+**N2_mv_vivit_unfreeze4 以 56.9% 成为全部实验的新最优**,超过 late-vivit(56.7%),
+可训练参数仅 ~39M(对方 ~260M)且共享单编码器。结论:MV-ViViT 的性能瓶颈是
+冻结特征而非融合机制;部分微调补齐后,跨视角注意力 + 参数效率的组合成立。
+强正则(dropout 0.3、单层融合)与 logit 混合均为负收益,不采用。
+best ckpt 仍在 epoch ~5,进一步的方向是解冻层数扫描与更小 backbone lr。
+
 ## 已知问题
 
 - ⚠️ **videomae 权重映射不完整**:当前 transformers 版本加载
