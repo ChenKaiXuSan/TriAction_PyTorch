@@ -32,6 +32,7 @@ Modes:
   mv             N: MV-ViViT (frozen ViViT + cross-view token fusion)
   mv2            N2: MV-ViViT round 2 (partial unfreeze / regularization / ensemble)
   mv3            N3: unfreeze sweep + mirror aug + focal + kpt stream + LLRD
+  mv4            N4: head-ROI dual stream / kpt-query pooling / aux head-pose
   noes           no-early-stopping full-length variants of the matrix (21 jobs;
                  front rgb 3dcnn is covered by run_e_noes_single_front_rgb_3dcnn.sh)
   all            all formal jobs (everything except smoke and noes)
@@ -102,6 +103,13 @@ mv3_scripts=(
     run_n3_mv_vivit_unfreeze8_llrd.sh
 )
 
+mv4_scripts=(
+    run_n4_mv_vivit_head_roi.sh
+    run_n4_mv_vivit_kpt_query.sh
+    run_n4_mv_vivit_aux_pose.sh
+    run_n4_mv_vivit_head_query.sh
+)
+
 ts_cva_scripts=(
     run_t_mid_no_gated_aggregation.sh
     run_t_mid_no_view_embedding.sh
@@ -139,6 +147,9 @@ case "$MODE" in
         ;;
     mv3)
         scripts=("${mv3_scripts[@]}")
+        ;;
+    mv4)
+        scripts=("${mv4_scripts[@]}")
         ;;
     noes)
         scripts=("${noes_scripts[@]}")
