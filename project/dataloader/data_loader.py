@@ -213,12 +213,14 @@ class DriverDataModule(LightningDataModule):
 
         views = self.view_name
         video_lists = {view: [] for view in views}
+        head_lists = {view: [] for view in views}
         kpt_lists = {view: [] for view in views}
         labels = []
         label_info = []
         meta = []
         chunk_info = []
         has_video = False
+        has_head = False
         has_kpt = False
 
         for sample in batch:
@@ -262,6 +264,16 @@ class DriverDataModule(LightningDataModule):
                         video_lists[view].append(video_tensor)
                         has_video = True
 
+            sample_heads = sample.get("head_video")
+            if isinstance(sample_heads, dict):
+                for view in views:
+                    if sample_heads.get(view) is not None:
+                        head_tensor = sample_heads[view]
+                        if head_tensor.ndim == 4:
+                            head_tensor = head_tensor.unsqueeze(0)
+                        head_lists[view].append(head_tensor)
+                        has_head = True
+
             sample_kpts = sample.get("sam3d_kpt")
             if isinstance(sample_kpts, dict):
                 for view in views:
@@ -285,6 +297,13 @@ class DriverDataModule(LightningDataModule):
                 for view in views
             }
 
+        head_out = None
+        if has_head:
+            head_out = {
+                view: (torch.cat(head_lists[view], dim=0) if head_lists[view] else None)
+                for view in views
+            }
+
         kpt_out = None
         if has_kpt:
             kpt_out = {
@@ -296,6 +315,7 @@ class DriverDataModule(LightningDataModule):
 
         return {
             "video": video_out,
+            "head_video": head_out,
             "sam3d_kpt": kpt_out,
             "label": label_tensor,
             "label_info": label_info,

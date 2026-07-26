@@ -1206,6 +1206,13 @@ class LabeledVideoDataset(Dataset):
                     f"No keypoint segment found for source_index={segment['source_index']} "
                     f"(person={item.person_id}, env={item.env_folder})."
                 )
+            # Not every person/env/view has SAM-3D results. Zero-fill the gaps so
+            # every requested view is present: dropping a view here would give the
+            # keypoint batch a smaller batch dimension than the video batch.
+            reference = next(iter(kpt_out.values()))
+            for view_name in self.view_name:
+                if view_name not in kpt_out:
+                    kpt_out[view_name] = torch.zeros_like(reference)
 
         label_name = str(segment["label"])
         if self.mirror_direction_aug and torch.rand(()) < 0.5:
