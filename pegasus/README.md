@@ -63,6 +63,11 @@ python -m project.eval --config-dir pegasus --config-name pegasus
 | E 附加 | `E_noes_single_front_rgb_3dcnn` | single front | rgb | 3dcnn | – | 无 early stopping,全量 50 epochs 参照(单独 qsub 提交) |
 | N 新架构 | `N_multi_mv_vivit` | multi 3-view | rgb | vivit(冻结) | mv_vivit | MV-ViViT:冻结 ViViT + 跨视角 token 注意力融合,`qsub_all.sh mv --run` |
 
+**Walltime 申请 8 小时**（集群上限是 24h，但实测单作业只需 1–3.2h）。这不只是省资源：
+维护窗口前调度器会 drain，放不进剩余时间的长作业**一个都不会启动**——曾因申请 24h
+导致 11 个作业空等两天。已排队的作业可用 `qalter -l elapstim_req=08:00:00 <ReqID>`
+原地改，无需重新提交。
+
 公共设置：50 epochs、precision `bf16-mixed`（H100 原生 bfloat16）、非 HF 实验 batch 16 / accum 1 / 8 帧、`train.gpu=[0]`（每作业 1 GPU 节点）。所有参数可用环境变量覆盖后 qsub，如 `MAX_EPOCHS=30 qsub pegasus/run_f_multi_mid.sh`（可用变量见 `run_common.sh` 顶部）。
 
 ## 批量提交步骤

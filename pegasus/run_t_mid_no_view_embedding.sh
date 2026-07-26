@@ -2,7 +2,7 @@
 #PBS -A SKIING
 #PBS -q gpu
 #PBS -b 1
-#PBS -l elapstim_req=24:00:00
+#PBS -l elapstim_req=08:00:00
 #PBS -N T_no_viewemb
 #PBS -o logs/pegasus/T_mid_no_view_embedding_out.log
 #PBS -e logs/pegasus/T_mid_no_view_embedding_err.log

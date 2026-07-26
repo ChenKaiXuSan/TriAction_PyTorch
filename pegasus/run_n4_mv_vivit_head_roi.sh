@@ -2,7 +2,7 @@
 #PBS -A SKIING
 #PBS -q gpu
 #PBS -b 1
-#PBS -l elapstim_req=24:00:00
+#PBS -l elapstim_req=08:00:00
 #PBS -N N4_head_roi
 #PBS -o logs/pegasus/N4_mv_vivit_head_roi_out.log
 #PBS -e logs/pegasus/N4_mv_vivit_head_roi_err.log

@@ -2,7 +2,7 @@
 #PBS -A SKIING
 #PBS -q gpu
 #PBS -b 1
-#PBS -l elapstim_req=24:00:00
+#PBS -l elapstim_req=08:00:00
 #PBS -N nF_concat
 #PBS -o logs/pegasus/F_multi_rgb_3dcnn_concat_noes_out.log
 #PBS -e logs/pegasus/F_multi_rgb_3dcnn_concat_noes_err.log
