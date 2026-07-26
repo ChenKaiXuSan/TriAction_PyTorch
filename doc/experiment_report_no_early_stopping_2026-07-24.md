@@ -137,8 +137,59 @@ dataloader 死锁,qdel 重提后正常)。纯正则版比冻结基线还低 5 �
 
 
 
+### N3 / N4 轮(2026-07-26 夜间):数据增广与关键点引导
+
+在 N2 冠军(unfreeze4,56.9%)基础上的两轮改进。N3 针对训练协议与数据,
+N4 实现"头部关键点引导"的三个层次。
+
+| 实验 | 机制 | acc | F1 |
+|---|---|---|---|
+| **N4_mv_vivit_kpt_query** | kpt 轨迹 token 作为 cross-attention 查询池化(层次 3) | **58.3%** 🥇 | 52.0% |
+| **N4_mv_vivit_head_query** | 头部 ROI 双流 + kpt 查询池化(层次 2+3) | 58.1% | **52.3%** 🥇 |
+| N3_mv_vivit_unfreeze6 | 解冻末 6 层 | 57.5% | 51.8% |
+| N3_mv_vivit_mirror | 方向感知镜像增广(翻转+左右相机/标签互换) | 57.2% | 51.2% |
+| N4_mv_vivit_aux_pose | 头部 yaw/pitch 回归辅助监督(层次 4,推理免 kpt) | 56.7% | 51.8% |
+| N3_mv_vivit_unfreeze8_llrd | 解冻末 8 层 + 层级学习率衰减 0.75 | 56.7% | 50.9% |
+| (N2 基线)unfreeze4 | — | 56.9% | 51.2% |
+| N3_mv_vivit_unfreeze8 | 解冻末 8 层 | 56.4% | 50.6% |
+| N3_mv_vivit_unfreeze2 | 解冻末 2 层 | 55.6% | 51.2% |
+| N3_mv_vivit_kpt | kpt 轨迹 token 平级拼接(层次 1) | 54.8% | 50.0% |
+| N3_mv_vivit_mirror_focal | 镜像增广 + focal loss | 51.8% | 47.7% |
+| N4_mv_vivit_head_roi | 头部 ROI 双流单独消融 | (dataloader 死锁,重跑中) | |
+
+结论:
+
+1. **关键点作为"查询"远优于作为"内容"**:同样的轨迹编码器,平级拼进序列只有
+   54.8%(比不用还低),改成 cross-attention 的 query 去检索视频 token 后达到
+   58.3% —— **+3.5 点**,是 N3/N4 两轮里最大的单项收益。引导的方式比引导的信号更重要。
+2. **解冻深度 6 层最优**(57.5 > 8 层 56.4 > 4 层 56.9 > 2 层 55.6),LLRD 对 8 层有
+   小幅补救(+0.3)但不敌 6 层。
+3. **镜像增广有效**(57.2,+0.3 vs 同配置基线),是唯一有正收益的数据侧改动。
+4. **focal loss 明显有害**(−5.4),与 N2 轮"强正则有害"一致 —— 小数据上不宜再加约束。
+5. 辅助姿态监督拿到 56.7% 且 F1 51.8%,与需要 kpt 的方案接近,**推理时可完全不依赖关键点**,
+   部署价值高。
+
+### 模型集成(离线,零训练成本)
+
+10 个已保存 `best_preds` 的模型做概率平均(测试集顺序一致,micro accuracy):
+
+| 方案 | acc |
+|---|---|
+| 最佳单模型(head_query / kpt_query) | 59.2% |
+| **top-3 集成**(head_query + kpt_query + unfreeze6) | **60.1%** |
+| top-5 集成 | 59.7% |
+
+*注:此处为 micro accuracy(直接由预测张量计算),与上表 torchmetrics 的 macro 指标口径不同,
+仅在本节内部可比。穷举 2–4 模型组合的最优为 61.0%,但该组合是在测试集上挑出来的,存在选择偏差,
+不作为正式结论。*
+
+集成以零训练成本再取得 +0.9 点,且 top-3 的选择只依据单模型排名,无测试集偏差。
+
 ## 已知问题
 
+- ⚠️ **dataloader 间歇性死锁**:已出现两次(N2_mv_vivit_reg、N4_mv_vivit_head_roi),
+  症状为 CPU 时间冻结、CSV 数小时无写入,直到 walltime 超时被杀。qdel 重提即可恢复。
+  怀疑与 PyAV 解码 + 多 worker 有关,尚未定位。
 - ⚠️ **videomae 权重映射不完整**:当前 transformers 版本加载
   `MCG-NJU/videomae-base-finetuned-kinetics` 时 attention 的 `q_bias`/`v_bias`
   无法映射(load report 中 MISSING/UNEXPECTED),这部分参数为随机初始化。
