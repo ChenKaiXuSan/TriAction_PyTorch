@@ -46,6 +46,7 @@ class LabeledVideoDataset(Dataset):
         decode_audio: bool = False,
         load_rgb: bool = True,
         load_kpt: bool = False,
+        mirror_direction_aug: bool = False,
         max_video_frames: Optional[int] = None,  # 如果设置，将长video分块加载
         view_name: list = ["front", "left", "right"],
         annotator_id: Optional[int] = None,
@@ -60,6 +61,11 @@ class LabeledVideoDataset(Dataset):
         self._decode_audio = bool(decode_audio)
         self.load_rgb = bool(load_rgb)
         self.load_kpt = bool(load_kpt)
+        # direction-aware horizontal mirroring (train only): flips frames,
+        # swaps left/right camera views and swaps left/right labels.
+        # Disabled automatically when keypoints are loaded (3D kpt mirroring
+        # would also require symmetric-joint index swapping).
+        self.mirror_direction_aug = bool(mirror_direction_aug) and not self.load_kpt
         self._annotator_id = annotator_id
         self.kpt_temporal_subsample_num = int(kpt_temporal_subsample_num)
         self.batch_unit = str(batch_unit)
@@ -1169,6 +1175,10 @@ class LabeledVideoDataset(Dataset):
                 )
 
         label_name = str(segment["label"])
+        if self.mirror_direction_aug and torch.rand(()) < 0.5:
+            video_out, label_name = self._apply_mirror_direction_aug(
+                video_out, label_name
+            )
         mapped_label = torch.tensor(self._label_to_id[label_name], dtype=torch.long)
 
         return {
@@ -1203,6 +1213,30 @@ class LabeledVideoDataset(Dataset):
                 else None,
             },
         }
+
+    @staticmethod
+    def _apply_mirror_direction_aug(
+        video_out: Optional[Dict[str, torch.Tensor]], label_name: str
+    ) -> Tuple[Optional[Dict[str, torch.Tensor]], str]:
+        """Mirror the world: hflip every view, swap left/right cameras and labels.
+
+        Only valid for view sets where mirroring maps cameras onto loaded ones:
+        {front} or supersets of {left, right}. Otherwise a no-op.
+        """
+        if video_out is None:
+            return video_out, label_name
+        views = set(video_out.keys())
+        if views != {"front"} and not {"left", "right"}.issubset(views):
+            return video_out, label_name
+
+        flipped = {
+            view: torch.flip(tensor, dims=[-1]) for view, tensor in video_out.items()
+        }
+        if {"left", "right"}.issubset(views):
+            flipped["left"], flipped["right"] = flipped["right"], flipped["left"]
+
+        label_swap = {"left": "right", "right": "left"}
+        return flipped, label_swap.get(label_name, label_name)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
         if self.batch_unit == "segment":

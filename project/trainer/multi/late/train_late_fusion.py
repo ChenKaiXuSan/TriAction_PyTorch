@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
@@ -17,6 +18,7 @@ from torchmetrics.classification import (
 
 from project.models.make_model import select_model
 from project.trainer.losses import build_class_weights, weighted_cross_entropy
+from project.utils.helper import save_helper
 
 
 class LateFusion3DCNNTrainer(LightningModule):
@@ -49,6 +51,9 @@ class LateFusion3DCNNTrainer(LightningModule):
 
         # fusion config (optional)
         self.fusion_mode = getattr(hparams.model, "fusion_mode", "logit_mean")
+        self.save_root = getattr(hparams, "log_path", "./logs")
+        self.test_pred_list: list = []
+        self.test_label_list: list = []
         # OOM guard (optional)
         self.batch_size = int(getattr(hparams.data, "batch_size", 1))
         self.video_batch_size = int(getattr(hparams.data, "video_batch_size", 8))
@@ -254,7 +259,28 @@ class LateFusion3DCNNTrainer(LightningModule):
             on_epoch=True,
             batch_size=label.size(0),
         )
+        if stage == "test":
+            self.test_pred_list.append(probs.detach().cpu())
+            self.test_label_list.append(label.detach().cpu())
         return loss
+
+    def on_test_start(self) -> None:
+        self.test_pred_list = []
+        self.test_label_list = []
+
+    def on_test_epoch_end(self) -> None:
+        if not self.test_pred_list or not self.test_label_list:
+            return
+        fold = "run"
+        if self.logger and getattr(self.logger, "root_dir", None):
+            fold = Path(self.logger.root_dir).name
+        save_helper(
+            all_pred=self.test_pred_list,
+            all_label=self.test_label_list,
+            fold=fold,
+            save_path=self.save_root,
+            num_class=self.num_classes,
+        )
 
     # ---- lightning hooks ----
     def training_step(self, batch: Dict[str, Any], batch_idx: int):

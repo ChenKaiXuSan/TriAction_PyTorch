@@ -118,6 +118,9 @@ class DriverDataModule(LightningDataModule):
         if self.input_type not in {"rgb", "kpt", "rgb_kpt"}:
             raise ValueError(f"Unsupported model.input_type: {self.input_type}")
         self.load_rgb = self.input_type in {"rgb", "rgb_kpt"}
+        self.mirror_direction_aug = bool(
+            getattr(opt.data, "mirror_direction_aug", False)
+        )
         self.load_kpt = self.input_type in {"kpt", "rgb_kpt"}
 
         self.mapping_transform = Compose(
@@ -159,6 +162,7 @@ class DriverDataModule(LightningDataModule):
             load_rgb=self.load_rgb,
             load_kpt=self.load_kpt,
             kpt_temporal_subsample_num=self.uniform_temporal_subsample_num,
+            mirror_direction_aug=self.mirror_direction_aug,
         )
 
         # val dataset

@@ -17,6 +17,8 @@ loss:
   beta2: 0.999 # decapture
 
   selection: ["cls", "attn_loss", "bg", "tmp"] # the loss selection for the total loss
+  type: ce # ce | focal (focal uses focal_gamma; class_weights act as alpha)
+  focal_gamma: 2.0
 
   lambda_list: [0.25, 0.5, 0.75, 1.0] # the lambda list for the total loss
   w_bg: 0.2 # the weight of background class for the loss function, used for cross validation with different class number
@@ -50,6 +52,8 @@ data:
   segment_grouped_shuffle: true # shuffle chunks, keep same-chunk segments adjacent for video cache reuse
   segment_shuffle_seed: 42
   batch_size: 16 # segment batch size when batch_unit=segment
+
+  mirror_direction_aug: false # train-only: hflip + left/right camera and label swap (rgb-only)
 
   magic_move: true              # 是否启用 magic_move
   magic_move_ratio: 0.1         # 比例（默认 0.1 = 10%）
@@ -107,6 +111,9 @@ model:
   mv_vivit_unfreeze_last_layers: 0 # >0 finetunes the last N ViViT layers (reduced lr)
   mv_vivit_backbone_lr_scale: 0.1 # lr multiplier for unfrozen backbone layers
   mv_vivit_view_logit_ensemble: false # average fusion logits with per-view aux logits
+  mv_vivit_llrd_gamma: 1.0 # <1 enables layer-wise lr decay across unfrozen backbone layers
+  mv_vivit_kpt_stream: false # append a per-view keypoint-trajectory token (needs input_type=rgb_kpt)
+  mv_vivit_kpt_hidden: 256
 
   # TS-CVA hyperparameters (all optional, defaults are shown)
   ts_cva_shared_backbone: true          # Share backbone across views (recommended)

@@ -59,3 +59,12 @@ def test_view_logit_ensemble_shape():
     assert model.view_head is not None
     logits = model(_videos())
     assert logits.shape == (2, 4)
+
+
+def test_kpt_stream_token_forward():
+    model = MVViVit(_hparams(mv_vivit_kpt_stream=True))
+    kpts = {v: torch.randn(2, 8, 70, 3) for v in ["front", "left", "right"]}
+    logits = model(_videos(), kpts=kpts)
+    assert logits.shape == (2, 4)
+    logits.sum().backward()
+    assert any(p.grad is not None for p in model.kpt_encoder.parameters())

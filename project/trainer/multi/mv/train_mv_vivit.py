@@ -2,7 +2,8 @@
 # -*- coding:utf-8 -*-
 """Trainer for MV-ViViT: frozen shared ViViT encoder + cross-view attention fusion."""
 
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 import torch
 from pytorch_lightning import LightningModule
@@ -15,7 +16,8 @@ from torchmetrics.classification import (
     MulticlassConfusionMatrix,
 )
 
-from project.trainer.losses import build_class_weights, weighted_cross_entropy
+from project.trainer.losses import build_class_weights, classification_loss
+from project.utils.helper import save_helper
 
 
 class MVViVitTrainer(LightningModule):
@@ -44,6 +46,11 @@ class MVViVitTrainer(LightningModule):
         self.view_names = list(view_names)
 
         self.model = MVViVit(hparams, view_names=self.view_names)
+        self._loss_hparams = hparams
+        self.save_root = getattr(hparams, "log_path", "./logs")
+        self.llrd_gamma = float(getattr(hparams.model, "mv_vivit_llrd_gamma", 1.0))
+        self.test_pred_list: list = []
+        self.test_label_list: list = []
 
         self._accuracy = MulticlassAccuracy(num_classes=self.num_classes)
         self._precision = MulticlassPrecision(num_classes=self.num_classes)
@@ -56,15 +63,24 @@ class MVViVitTrainer(LightningModule):
         else:
             self.class_weights = None
 
-    def forward(self, videos: Dict[str, torch.Tensor]) -> torch.Tensor:
-        return self.model(videos)
+    def forward(
+        self,
+        videos: Dict[str, torch.Tensor],
+        kpts: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> torch.Tensor:
+        return self.model(videos, kpts=kpts)
 
     def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
         videos = {k: v.detach() for k, v in batch["video"].items()}
+        kpts = batch.get("sam3d_kpt")
+        if kpts is not None:
+            kpts = {k: v.detach() for k, v in kpts.items() if v is not None} or None
         label = batch["label"].view(-1)
 
-        logits = self(videos)
-        loss = weighted_cross_entropy(logits, label, self.class_weights)
+        logits = self(videos, kpts)
+        loss = classification_loss(
+            logits, label, self.class_weights, hparams=self._loss_hparams
+        )
 
         probs = torch.softmax(logits, dim=1)
         acc = self._accuracy(probs, label)
@@ -87,7 +103,28 @@ class MVViVitTrainer(LightningModule):
             on_epoch=True,
             batch_size=label.size(0),
         )
+        if stage == "test":
+            self.test_pred_list.append(probs.detach().cpu())
+            self.test_label_list.append(label.detach().cpu())
         return loss
+
+    def on_test_start(self) -> None:
+        self.test_pred_list = []
+        self.test_label_list = []
+
+    def on_test_epoch_end(self) -> None:
+        if not self.test_pred_list or not self.test_label_list:
+            return
+        fold = "run"
+        if self.logger and getattr(self.logger, "root_dir", None):
+            fold = Path(self.logger.root_dir).name
+        save_helper(
+            all_pred=self.test_pred_list,
+            all_label=self.test_label_list,
+            fold=fold,
+            save_path=self.save_root,
+            num_class=self.num_classes,
+        )
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int):
         return self._shared_step(batch, stage="train")
@@ -99,19 +136,42 @@ class MVViVitTrainer(LightningModule):
         self._shared_step(batch, stage="test")
 
     def configure_optimizers(self):
-        # partially unfrozen backbone layers train at a reduced lr
-        backbone_params, fusion_params = [], []
-        for name, param in self.model.named_parameters():
-            if not param.requires_grad:
-                continue
-            if name.startswith("backbone."):
-                backbone_params.append(param)
-            else:
-                fusion_params.append(param)
-        param_groups = [{"params": fusion_params}]
-        if backbone_params:
+        # partially unfrozen backbone layers train at a reduced lr; with
+        # llrd_gamma < 1 each layer below the top decays further (layer-wise
+        # lr decay)
+        param_groups = [
+            {
+                "params": [
+                    p
+                    for n, p in self.model.named_parameters()
+                    if p.requires_grad and not n.startswith("backbone.")
+                ]
+            }
+        ]
+        layers = self.model._encoder_layers(self.model.backbone)
+        trainable_layers = [
+            layer
+            for layer in layers
+            if any(p.requires_grad for p in layer.parameters())
+        ]
+        grouped = set()
+        for depth, layer in enumerate(reversed(trainable_layers)):
+            layer_params = [p for p in layer.parameters() if p.requires_grad]
+            grouped.update(id(p) for p in layer_params)
             param_groups.append(
-                {"params": backbone_params, "lr": self.lr * self.backbone_lr_scale}
+                {
+                    "params": layer_params,
+                    "lr": self.lr * self.backbone_lr_scale * (self.llrd_gamma**depth),
+                }
+            )
+        leftovers = [
+            p
+            for n, p in self.model.named_parameters()
+            if p.requires_grad and n.startswith("backbone.") and id(p) not in grouped
+        ]
+        if leftovers:
+            param_groups.append(
+                {"params": leftovers, "lr": self.lr * self.backbone_lr_scale}
             )
         optimizer = torch.optim.Adam(param_groups, lr=self.lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(

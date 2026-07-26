@@ -32,6 +32,28 @@ from project.models.hf_video_backbone import _load_transformers
 DEFAULT_VIVIT_MODEL = "google/vivit-b-16x2-kinetics400"
 
 
+class _TrajectoryEncoder(nn.Module):
+    """(B, T, K, 3) keypoint trajectory -> one (B, D) token via GRU.
+
+    The input layer is lazy because the dataset yields the raw SAM-3D
+    keypoint set, whose size we don't hard-code here.
+    """
+
+    def __init__(self, hidden_dim: int, out_dim: int) -> None:
+        super().__init__()
+        self.proj = nn.Sequential(nn.LazyLinear(hidden_dim), nn.GELU())
+        self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
+        self.out = nn.Linear(hidden_dim, out_dim)
+
+    def forward(self, kpts: torch.Tensor) -> torch.Tensor:
+        if kpts.ndim != 4:
+            raise ValueError(f"Expected keypoints (B, T, K, 3), got {tuple(kpts.shape)}")
+        batch, steps = kpts.shape[0], kpts.shape[1]
+        x = self.proj(kpts.reshape(batch, steps, -1).float())
+        _, hidden = self.gru(x)
+        return self.out(hidden[-1])
+
+
 class MVViVit(nn.Module):
     """Cross-view fusion classifier over a shared (frozen) ViViT encoder.
 
@@ -114,6 +136,18 @@ class MVViVit(nn.Module):
             self.view_head = nn.Linear(self.feature_dim, self.num_classes)
         else:
             self.view_head = None
+
+        # optional per-view keypoint-trajectory token (head pose is nearly a
+        # direct readout of head-movement direction); appended to the fusion
+        # sequence so cross-view attention can consume it
+        self.use_kpt_stream = bool(getattr(model_cfg, "mv_vivit_kpt_stream", False))
+        if self.use_kpt_stream:
+            kpt_hidden = int(getattr(model_cfg, "mv_vivit_kpt_hidden", 256))
+            self.kpt_encoder = _TrajectoryEncoder(
+                hidden_dim=kpt_hidden, out_dim=self.feature_dim
+            )
+        else:
+            self.kpt_encoder = None
 
     @staticmethod
     def _build_backbone(model_cfg):
@@ -206,13 +240,24 @@ class MVViVit(nn.Module):
         ).mean(dim=2)
         return torch.cat([cls_token, temporal_tokens], dim=1)
 
-    def forward(self, videos: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self,
+        videos: Dict[str, torch.Tensor],
+        kpts: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> torch.Tensor:
         view_tokens = []
         for idx, view in enumerate(self.view_names):
             video = videos.get(view)
             if video is None:
                 raise ValueError(f"MVViVit requires videos['{view}'].")
             tokens = self._encode_view(video)
+            if self.kpt_encoder is not None:
+                if kpts is None or kpts.get(view) is None:
+                    raise ValueError(
+                        f"mv_vivit_kpt_stream=true requires keypoints for view '{view}'."
+                    )
+                kpt_token = self.kpt_encoder(kpts[view]).unsqueeze(1)
+                tokens = torch.cat([tokens, kpt_token], dim=1)
             if self.view_embedding is not None:
                 tokens = tokens + self.view_embedding[idx]
             view_tokens.append(tokens)

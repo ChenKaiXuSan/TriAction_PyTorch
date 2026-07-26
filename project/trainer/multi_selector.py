@@ -118,10 +118,13 @@ def _validate_hparams(hparams) -> tuple:
             f"Please use single_selector.build_single_trainer() for single-view training."
         )
     
-    # Validate input type
-    if input_type != "rgb":
+    # Validate input type (mv_vivit additionally accepts rgb_kpt for its
+    # keypoint-trajectory token stream)
+    allowed_inputs = {"rgb", "rgb_kpt"} if fuse_method == "mv_vivit" else {"rgb"}
+    if input_type not in allowed_inputs:
         raise ValueError(
-            f"Multi-view trainer only supports model.input_type='rgb', got '{input_type}'."
+            f"Multi-view trainer with fuse_method='{fuse_method}' supports "
+            f"model.input_type in {sorted(allowed_inputs)}, got '{input_type}'."
         )
     
     # Validate fusion method
