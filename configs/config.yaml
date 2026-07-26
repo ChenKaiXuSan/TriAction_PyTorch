@@ -54,6 +54,9 @@ data:
   batch_size: 16 # segment batch size when batch_unit=segment
 
   mirror_direction_aug: false # train-only: hflip + left/right camera and label swap (rgb-only)
+  head_roi_stream: false # return sample["head_video"]: head-centered square crops per view (needs kpt dirs)
+  head_roi_margin: 2.2
+  head_roi_min_size: 64
 
   magic_move: true              # 是否启用 magic_move
   magic_move_ratio: 0.1         # 比例（默认 0.1 = 10%）
@@ -114,6 +117,10 @@ model:
   mv_vivit_llrd_gamma: 1.0 # <1 enables layer-wise lr decay across unfrozen backbone layers
   mv_vivit_kpt_stream: false # append a per-view keypoint-trajectory token (needs input_type=rgb_kpt)
   mv_vivit_kpt_hidden: 256
+  mv_vivit_kpt_query_pooling: false # pool fused tokens with kpt-trajectory queries instead of mean
+  mv_vivit_head_stream: false # encode head-ROI crops as a second token stream (needs data.head_roi_stream)
+  mv_vivit_aux_pose_weight: 0.0 # >0 adds head-pose (yaw/pitch) regression from kpts as aux loss
+  mv_vivit_aux_pose_steps: 8
 
   # TS-CVA hyperparameters (all optional, defaults are shown)
   ts_cva_shared_backbone: true          # Share backbone across views (recommended)

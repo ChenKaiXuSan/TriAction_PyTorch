@@ -121,6 +121,9 @@ class DriverDataModule(LightningDataModule):
         self.mirror_direction_aug = bool(
             getattr(opt.data, "mirror_direction_aug", False)
         )
+        self.head_roi_stream = bool(getattr(opt.data, "head_roi_stream", False))
+        self.head_roi_margin = float(getattr(opt.data, "head_roi_margin", 2.2))
+        self.head_roi_min_size = int(getattr(opt.data, "head_roi_min_size", 64))
         self.load_kpt = self.input_type in {"kpt", "rgb_kpt"}
 
         self.mapping_transform = Compose(
@@ -163,6 +166,9 @@ class DriverDataModule(LightningDataModule):
             load_kpt=self.load_kpt,
             kpt_temporal_subsample_num=self.uniform_temporal_subsample_num,
             mirror_direction_aug=self.mirror_direction_aug,
+            head_roi_stream=self.head_roi_stream,
+            head_roi_margin=self.head_roi_margin,
+            head_roi_min_size=self.head_roi_min_size,
         )
 
         # val dataset
@@ -177,6 +183,9 @@ class DriverDataModule(LightningDataModule):
             load_rgb=self.load_rgb,
             load_kpt=self.load_kpt,
             kpt_temporal_subsample_num=self.uniform_temporal_subsample_num,
+            head_roi_stream=self.head_roi_stream,
+            head_roi_margin=self.head_roi_margin,
+            head_roi_min_size=self.head_roi_min_size,
         )
 
         # test dataset
@@ -191,6 +200,9 @@ class DriverDataModule(LightningDataModule):
             load_rgb=self.load_rgb,
             load_kpt=self.load_kpt,
             kpt_temporal_subsample_num=self.uniform_temporal_subsample_num,
+            head_roi_stream=self.head_roi_stream,
+            head_roi_margin=self.head_roi_margin,
+            head_roi_min_size=self.head_roi_min_size,
         )
 
     def _collate_fn(self, batch: Any) -> Any:

@@ -19,6 +19,27 @@ from torchmetrics.classification import (
 from project.trainer.losses import build_class_weights, classification_loss
 from project.utils.helper import save_helper
 
+# raw SAM-3D rows: nose / left-eye / right-eye / left-ear / right-ear
+_NOSE, _LEYE, _REYE, _LEAR, _REAR = 0, 1, 2, 3, 4
+
+
+def head_pose_targets(kpts: torch.Tensor, steps: int) -> torch.Tensor:
+    """(B, T, K, 3) head keypoints -> (B, 2*steps) yaw/pitch trajectory.
+
+    Facing direction is approximated by the vector from the ear midpoint to the
+    nose; yaw/pitch conventions only need to be self-consistent since this is
+    an auxiliary regression target.
+    """
+    ears_mid = (kpts[:, :, _LEAR, :] + kpts[:, :, _REAR, :]) / 2.0
+    facing = kpts[:, :, _NOSE, :] - ears_mid  # (B, T, 3)
+    yaw = torch.atan2(facing[..., 0], facing[..., 2].abs() + 1e-6)
+    pitch = torch.atan2(
+        facing[..., 1], facing[..., [0, 2]].norm(dim=-1) + 1e-6
+    )
+    traj = torch.stack([yaw, pitch], dim=1)  # (B, 2, T)
+    traj = torch.nn.functional.adaptive_avg_pool1d(traj, steps)
+    return traj.flatten(1)
+
 
 class MVViVitTrainer(LightningModule):
     """
@@ -49,6 +70,9 @@ class MVViVitTrainer(LightningModule):
         self._loss_hparams = hparams
         self.save_root = getattr(hparams, "log_path", "./logs")
         self.llrd_gamma = float(getattr(hparams.model, "mv_vivit_llrd_gamma", 1.0))
+        self.aux_pose_weight = float(
+            getattr(hparams.model, "mv_vivit_aux_pose_weight", 0.0)
+        )
         self.test_pred_list: list = []
         self.test_label_list: list = []
 
@@ -67,20 +91,51 @@ class MVViVitTrainer(LightningModule):
         self,
         videos: Dict[str, torch.Tensor],
         kpts: Optional[Dict[str, torch.Tensor]] = None,
-    ) -> torch.Tensor:
-        return self.model(videos, kpts=kpts)
+        head_videos: Optional[Dict[str, torch.Tensor]] = None,
+        return_pooled: bool = False,
+    ):
+        return self.model(
+            videos, kpts=kpts, head_videos=head_videos, return_pooled=return_pooled
+        )
 
     def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
         videos = {k: v.detach() for k, v in batch["video"].items()}
         kpts = batch.get("sam3d_kpt")
         if kpts is not None:
             kpts = {k: v.detach() for k, v in kpts.items() if v is not None} or None
+        head_videos = batch.get("head_video")
+        if head_videos is not None:
+            head_videos = {k: v.detach() for k, v in head_videos.items()}
         label = batch["label"].view(-1)
 
-        logits = self(videos, kpts)
+        use_aux = self.aux_pose_weight > 0 and self.model.aux_pose_head is not None
+        if use_aux:
+            logits, pooled = self(videos, kpts, head_videos, return_pooled=True)
+        else:
+            logits = self(videos, kpts, head_videos)
         loss = classification_loss(
             logits, label, self.class_weights, hparams=self._loss_hparams
         )
+        if use_aux:
+            if kpts is None or not kpts:
+                raise ValueError(
+                    "mv_vivit_aux_pose_weight>0 requires keypoints "
+                    "(set model.input_type=rgb_kpt)."
+                )
+            ref_view = "front" if "front" in kpts else next(iter(kpts))
+            target = head_pose_targets(
+                kpts[ref_view].float(), self.model.aux_pose_steps
+            )
+            aux_pred = self.model.aux_pose_head(pooled)
+            aux_loss = torch.nn.functional.smooth_l1_loss(aux_pred, target)
+            self.log(
+                f"{stage}/aux_pose_loss",
+                aux_loss,
+                on_step=False,
+                on_epoch=True,
+                batch_size=label.size(0),
+            )
+            loss = loss + self.aux_pose_weight * aux_loss
 
         probs = torch.softmax(logits, dim=1)
         acc = self._accuracy(probs, label)

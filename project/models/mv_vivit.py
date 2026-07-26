@@ -141,13 +141,45 @@ class MVViVit(nn.Module):
         # direct readout of head-movement direction); appended to the fusion
         # sequence so cross-view attention can consume it
         self.use_kpt_stream = bool(getattr(model_cfg, "mv_vivit_kpt_stream", False))
-        if self.use_kpt_stream:
+        # kpt-query pooling replaces mean pooling with cross-attention whose
+        # queries are the per-view keypoint-trajectory tokens (level-3 guidance)
+        self.use_kpt_query_pooling = bool(
+            getattr(model_cfg, "mv_vivit_kpt_query_pooling", False)
+        )
+        if self.use_kpt_stream or self.use_kpt_query_pooling:
             kpt_hidden = int(getattr(model_cfg, "mv_vivit_kpt_hidden", 256))
             self.kpt_encoder = _TrajectoryEncoder(
                 hidden_dim=kpt_hidden, out_dim=self.feature_dim
             )
         else:
             self.kpt_encoder = None
+        if self.use_kpt_query_pooling:
+            num_heads = int(getattr(model_cfg, "mv_vivit_fusion_heads", 8))
+            self.query_pool = nn.MultiheadAttention(
+                self.feature_dim, num_heads, batch_first=True
+            )
+        else:
+            self.query_pool = None
+
+        # head-ROI dual stream: head crops share the backbone; their tokens get
+        # an additive stream embedding so fusion can tell the streams apart
+        self.use_head_stream = bool(getattr(model_cfg, "mv_vivit_head_stream", False))
+        if self.use_head_stream:
+            self.head_stream_embedding = nn.Parameter(
+                torch.zeros(1, 1, self.feature_dim)
+            )
+            nn.init.trunc_normal_(self.head_stream_embedding, std=0.02)
+        else:
+            self.head_stream_embedding = None
+
+        # auxiliary head-pose regression (level-4 guidance): trained from
+        # keypoint-derived yaw/pitch targets, unused at inference
+        self.aux_pose_steps = int(getattr(model_cfg, "mv_vivit_aux_pose_steps", 8))
+        aux_weight = float(getattr(model_cfg, "mv_vivit_aux_pose_weight", 0.0))
+        if aux_weight > 0:
+            self.aux_pose_head = nn.Linear(self.feature_dim, 2 * self.aux_pose_steps)
+        else:
+            self.aux_pose_head = None
 
     @staticmethod
     def _build_backbone(model_cfg):
@@ -240,31 +272,57 @@ class MVViVit(nn.Module):
         ).mean(dim=2)
         return torch.cat([cls_token, temporal_tokens], dim=1)
 
+    def _view_kpt_token(
+        self, kpts: Optional[Dict[str, torch.Tensor]], view: str
+    ) -> torch.Tensor:
+        if kpts is None or kpts.get(view) is None:
+            raise ValueError(
+                f"keypoint guidance is enabled but keypoints for view '{view}' are missing."
+            )
+        return self.kpt_encoder(kpts[view])
+
     def forward(
         self,
         videos: Dict[str, torch.Tensor],
         kpts: Optional[Dict[str, torch.Tensor]] = None,
-    ) -> torch.Tensor:
+        head_videos: Optional[Dict[str, torch.Tensor]] = None,
+        return_pooled: bool = False,
+    ):
         view_tokens = []
+        kpt_query_tokens = []
         for idx, view in enumerate(self.view_names):
             video = videos.get(view)
             if video is None:
                 raise ValueError(f"MVViVit requires videos['{view}'].")
             tokens = self._encode_view(video)
-            if self.kpt_encoder is not None:
-                if kpts is None or kpts.get(view) is None:
+            if self.use_head_stream:
+                if head_videos is None or head_videos.get(view) is None:
                     raise ValueError(
-                        f"mv_vivit_kpt_stream=true requires keypoints for view '{view}'."
+                        f"mv_vivit_head_stream=true requires head_videos['{view}'] "
+                        "(enable data.head_roi_stream)."
                     )
-                kpt_token = self.kpt_encoder(kpts[view]).unsqueeze(1)
-                tokens = torch.cat([tokens, kpt_token], dim=1)
+                head_tokens = (
+                    self._encode_view(head_videos[view]) + self.head_stream_embedding
+                )
+                tokens = torch.cat([tokens, head_tokens], dim=1)
+            if self.kpt_encoder is not None:
+                kpt_token = self._view_kpt_token(kpts, view)
+                kpt_query_tokens.append(kpt_token)
+                if self.use_kpt_stream:
+                    tokens = torch.cat([tokens, kpt_token.unsqueeze(1)], dim=1)
             if self.view_embedding is not None:
                 tokens = tokens + self.view_embedding[idx]
             view_tokens.append(tokens)
 
         sequence = torch.cat(view_tokens, dim=1)
         fused = self.cross_view_fusion(sequence)
-        pooled = fused.mean(dim=1)
+
+        if self.query_pool is not None:
+            queries = torch.stack(kpt_query_tokens, dim=1)  # (B, V, D)
+            attended, _ = self.query_pool(queries, fused, fused)
+            pooled = attended.mean(dim=1)
+        else:
+            pooled = fused.mean(dim=1)
         logits = self.head(self.norm(pooled))
 
         if self.view_head is not None:
@@ -272,4 +330,6 @@ class MVViVit(nn.Module):
                 [self.view_head(self.norm(t.mean(dim=1))) for t in view_tokens]
             ).mean(dim=0)
             logits = 0.5 * logits + 0.5 * view_logits
+        if return_pooled:
+            return logits, self.norm(pooled)
         return logits

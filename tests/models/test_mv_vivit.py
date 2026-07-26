@@ -68,3 +68,31 @@ def test_kpt_stream_token_forward():
     assert logits.shape == (2, 4)
     logits.sum().backward()
     assert any(p.grad is not None for p in model.kpt_encoder.parameters())
+
+
+def test_head_stream_forward():
+    model = MVViVit(_hparams(mv_vivit_head_stream=True))
+    logits = model(_videos(), head_videos=_videos())
+    assert logits.shape == (2, 4)
+
+
+def test_kpt_query_pooling_forward():
+    model = MVViVit(_hparams(mv_vivit_kpt_query_pooling=True))
+    assert model.query_pool is not None
+    kpts = {v: torch.randn(2, 8, 70, 3) for v in ["front", "left", "right"]}
+    logits = model(_videos(), kpts=kpts)
+    assert logits.shape == (2, 4)
+    logits.sum().backward()
+    assert any(p.grad is not None for p in model.query_pool.parameters())
+
+
+def test_aux_pose_head_and_targets():
+    from project.trainer.multi.mv.train_mv_vivit import head_pose_targets
+
+    model = MVViVit(_hparams(mv_vivit_aux_pose_weight=0.5))
+    assert model.aux_pose_head is not None
+    logits, pooled = model(_videos(), return_pooled=True)
+    aux = model.aux_pose_head(pooled)
+    assert aux.shape == (2, 2 * model.aux_pose_steps)
+    target = head_pose_targets(torch.randn(2, 12, 70, 3), model.aux_pose_steps)
+    assert target.shape == aux.shape

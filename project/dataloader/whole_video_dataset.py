@@ -47,6 +47,9 @@ class LabeledVideoDataset(Dataset):
         load_rgb: bool = True,
         load_kpt: bool = False,
         mirror_direction_aug: bool = False,
+        head_roi_stream: bool = False,
+        head_roi_margin: float = 2.2,
+        head_roi_min_size: int = 64,
         max_video_frames: Optional[int] = None,  # 如果设置，将长video分块加载
         view_name: list = ["front", "left", "right"],
         annotator_id: Optional[int] = None,
@@ -66,6 +69,11 @@ class LabeledVideoDataset(Dataset):
         # Disabled automatically when keypoints are loaded (3D kpt mirroring
         # would also require symmetric-joint index swapping).
         self.mirror_direction_aug = bool(mirror_direction_aug) and not self.load_kpt
+        # head ROI dual stream: crop a head-centered square (from SAM-3D 2D
+        # keypoints) per view and return it as sample["head_video"]
+        self.head_roi_stream = bool(head_roi_stream)
+        self.head_roi_margin = float(head_roi_margin)
+        self.head_roi_min_size = int(head_roi_min_size)
         self._annotator_id = annotator_id
         self.kpt_temporal_subsample_num = int(kpt_temporal_subsample_num)
         self.batch_unit = str(batch_unit)
@@ -1152,6 +1160,31 @@ class LabeledVideoDataset(Dataset):
                 )
             video_out = {view: loaded_views[view] for view in self.view_name}
 
+        head_out: Optional[Dict[str, torch.Tensor]] = None
+        if self.head_roi_stream and self.load_rgb:
+            head_out = {}
+            for view_name in self.view_name:
+                kpt_dir = (
+                    item.sam3d_kpts.get(view_name)
+                    if item.sam3d_kpts is not None
+                    else None
+                )
+                center = self._load_head_bbox(
+                    kpt_dir,
+                    start_frame=int(segment["segment_abs_start"]),
+                    end_frame=int(segment["segment_abs_end"]),
+                )
+                frames, _ = self._load_one_view(
+                    item.videos[view_name],
+                    chunk_start_sec,
+                    chunk_end_sec,
+                )
+                segment_frames = frames[segment_rel_start:segment_rel_end]
+                head_frames = self._crop_head_roi(segment_frames, center)
+                head_out[view_name] = self._apply_transform(head_frames).permute(
+                    1, 0, 2, 3
+                )
+
         kpt_out: Optional[Dict[str, torch.Tensor]] = None
         if self.load_kpt:
             kpt_out = {}
@@ -1181,7 +1214,7 @@ class LabeledVideoDataset(Dataset):
             )
         mapped_label = torch.tensor(self._label_to_id[label_name], dtype=torch.long)
 
-        return {
+        result = {
             "video": video_out,
             "sam3d_kpt": kpt_out,
             "label": mapped_label,
@@ -1213,6 +1246,74 @@ class LabeledVideoDataset(Dataset):
                 else None,
             },
         }
+        if head_out is not None:
+            result["head_video"] = head_out
+        return result
+
+    # head keypoint rows in the raw SAM-3D set: nose, eyes, ears (+ neck/acromia)
+    _HEAD_KPT_INDICES = (0, 1, 2, 3, 4, 67, 68, 69)
+    _HEAD_BBOX_MAX_FILES = 8
+
+    def _load_head_bbox(
+        self,
+        kpt_dir,
+        start_frame: int,
+        end_frame: Optional[int],
+    ) -> Optional[Tuple[float, float]]:
+        """Median head center (x, y) in pixel coords over sampled segment frames."""
+        if kpt_dir is None:
+            return None
+        files, frame_numbers = self._get_sam3d_file_index(kpt_dir)
+        if not files:
+            return None
+        if frame_numbers:
+            selected = [
+                f
+                for idx, f in zip(frame_numbers, files)
+                if idx >= int(start_frame)
+                and (end_frame is None or idx < int(end_frame))
+            ]
+        else:
+            selected = files[int(start_frame) : int(end_frame) if end_frame else None]
+        if not selected:
+            return None
+        step = max(1, len(selected) // self._HEAD_BBOX_MAX_FILES)
+        centers = []
+        for npz_path in selected[::step][: self._HEAD_BBOX_MAX_FILES]:
+            try:
+                with np.load(npz_path, allow_pickle=True) as data:
+                    out = data["output"].item()
+                kpts_2d = out.get("pred_keypoints_2d")
+                if kpts_2d is None:
+                    continue
+                head = kpts_2d[list(self._HEAD_KPT_INDICES), :2]
+                centers.append(np.median(head, axis=0))
+            except Exception:
+                continue
+        if not centers:
+            return None
+        cx, cy = np.median(np.stack(centers), axis=0)
+        return float(cx), float(cy)
+
+    def _crop_head_roi(
+        self, video_tchw: torch.Tensor, center: Optional[Tuple[float, float]]
+    ) -> torch.Tensor:
+        """Square head crop around center, clamped to frame bounds.
+
+        Falls back to the full frame when no keypoint-derived center exists.
+        """
+        if center is None:
+            return video_tchw
+        height, width = int(video_tchw.shape[-2]), int(video_tchw.shape[-1])
+        size = max(
+            self.head_roi_min_size,
+            int(round(min(height, width) / 2 * self.head_roi_margin / 2.2)),
+        )
+        half = size // 2
+        cx = int(round(min(max(center[0], half), width - half)))
+        cy = int(round(min(max(center[1], half), height - half)))
+        top, left = max(0, cy - half), max(0, cx - half)
+        return video_tchw[..., top : top + size, left : left + size]
 
     @staticmethod
     def _apply_mirror_direction_aug(
@@ -1603,6 +1704,9 @@ class LabeledVideoDataset(Dataset):
                 else None,
             },
         }
+        if head_out is not None:
+            result["head_video"] = head_out
+        return result
 
 
 def whole_video_dataset(
@@ -1617,6 +1721,10 @@ def whole_video_dataset(
     annotator_id: Optional[int] = None,
     kpt_temporal_subsample_num: int = 8,
     batch_unit: str = "chunk",
+    mirror_direction_aug: bool = False,
+    head_roi_stream: bool = False,
+    head_roi_margin: float = 2.2,
+    head_roi_min_size: int = 64,
 ) -> LabeledVideoDataset:
     """
     Create a LabeledVideoDataset for whole video processing.
@@ -1650,4 +1758,8 @@ def whole_video_dataset(
         annotator_id=annotator_id,
         kpt_temporal_subsample_num=kpt_temporal_subsample_num,
         batch_unit=batch_unit,
+        mirror_direction_aug=mirror_direction_aug,
+        head_roi_stream=head_roi_stream,
+        head_roi_margin=head_roi_margin,
+        head_roi_min_size=head_roi_min_size,
     )
