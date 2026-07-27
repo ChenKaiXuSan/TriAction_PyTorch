@@ -2,12 +2,14 @@
 #PBS -A SKIING
 #PBS -q gpu
 #PBS -b 1
-#PBS -l elapstim_req=08:00:00
+#PBS -l elapstim_req=12:00:00
 #PBS -N K_mv4
 #PBS -o logs/pegasus/K_mvvivit_fold4_out.log
 #PBS -e logs/pegasus/K_mvvivit_fold4_err.log
 
 # Person-wise 5-fold CV: validation persons are unseen in training.
+# 12h: person-held-out folds validate on 16-20 videos (vs 8 for the single
+# split), which pushed the 8h requests over the limit at epoch ~45/50.
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 BATCH_SIZE="${BATCH_SIZE:-2}"
