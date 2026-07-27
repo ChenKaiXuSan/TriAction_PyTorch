@@ -33,6 +33,8 @@ Modes:
   mv2            N2: MV-ViViT round 2 (partial unfreeze / regularization / ensemble)
   mv3            N3: unfreeze sweep + mirror aug + focal + kpt stream + LLRD
   mv4            N4: head-ROI dual stream / kpt-query pooling / aux head-pose
+  kfold          K: person-wise 5-fold CV, 3dcnn baseline vs MV-ViViT
+                    (aggregate with: python scripts/aggregate_folds.py)
   noes           no-early-stopping full-length variants of the matrix (21 jobs;
                  front rgb 3dcnn is covered by run_e_noes_single_front_rgb_3dcnn.sh)
   all            all formal jobs (everything except smoke and noes)
@@ -110,6 +112,19 @@ mv4_scripts=(
     run_n4_mv_vivit_head_query.sh
 )
 
+kfold_scripts=(
+    run_k_baseline3dcnn_fold0.sh
+    run_k_baseline3dcnn_fold1.sh
+    run_k_baseline3dcnn_fold2.sh
+    run_k_baseline3dcnn_fold3.sh
+    run_k_baseline3dcnn_fold4.sh
+    run_k_mvvivit_fold0.sh
+    run_k_mvvivit_fold1.sh
+    run_k_mvvivit_fold2.sh
+    run_k_mvvivit_fold3.sh
+    run_k_mvvivit_fold4.sh
+)
+
 ts_cva_scripts=(
     run_t_mid_no_gated_aggregation.sh
     run_t_mid_no_view_embedding.sh
@@ -150,6 +165,9 @@ case "$MODE" in
         ;;
     mv4)
         scripts=("${mv4_scripts[@]}")
+        ;;
+    kfold)
+        scripts=("${kfold_scripts[@]}")
         ;;
     noes)
         scripts=("${noes_scripts[@]}")

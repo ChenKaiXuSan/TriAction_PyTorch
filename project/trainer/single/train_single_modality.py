@@ -19,6 +19,7 @@ from torchmetrics.classification import (
 )
 
 from project.models.make_model import select_model
+from project.trainer.metrics import build_stage_metrics
 from project.trainer.losses import build_class_weights, weighted_cross_entropy
 from project.utils.helper import save_helper
 
@@ -44,10 +45,10 @@ class SingleModalityClassifierTrainer(LightningModule):
         self.model = select_model(hparams)
         self.save_root = getattr(hparams, "log_path", "./logs")
 
-        self._accuracy = MulticlassAccuracy(num_classes=self.num_classes)
-        self._precision = MulticlassPrecision(num_classes=self.num_classes)
-        self._recall = MulticlassRecall(num_classes=self.num_classes)
-        self._f1_score = MulticlassF1Score(num_classes=self.num_classes)
+        # accumulated per stage and reduced once per epoch (see project/trainer/metrics.py)
+        self.train_metrics, self.val_metrics, self.test_metrics = build_stage_metrics(
+            self.num_classes
+        )
         self._confusion_matrix = MulticlassConfusionMatrix(num_classes=self.num_classes)
 
         class_weights = build_class_weights(hparams)
@@ -114,19 +115,10 @@ class SingleModalityClassifierTrainer(LightningModule):
         batch_size = int(label.shape[0])
         self.log(f"{stage}/loss", loss, on_epoch=True, on_step=True, batch_size=batch_size)
 
-        acc = self._accuracy(probs, label)
-        precision = self._precision(probs, label)
-        recall = self._recall(probs, label)
-        f1_score = self._f1_score(probs, label)
-        _ = self._confusion_matrix(probs, label)
-
+        metrics = getattr(self, f"{stage}_metrics")
+        metrics(probs, label)
         self.log_dict(
-            {
-                f"{stage}/video_acc": acc,
-                f"{stage}/video_precision": precision,
-                f"{stage}/video_recall": recall,
-                f"{stage}/video_f1_score": f1_score,
-            },
+            metrics,
             on_epoch=True,
             on_step=True,
             batch_size=batch_size,

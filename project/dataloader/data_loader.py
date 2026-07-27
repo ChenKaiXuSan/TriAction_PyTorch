@@ -376,7 +376,9 @@ class DriverDataModule(LightningDataModule):
             num_workers=self._val_num_workers,
             pin_memory=True,
             shuffle=False,
-            drop_last=True,
+            # score every segment: dropping the last partial batch silently
+            # shrinks the evaluation set (228 -> 224 at batch_size 16)
+            drop_last=False,
             collate_fn=self._collate_fn,
             **self._worker_kwargs(self._val_num_workers),
         )
@@ -396,7 +398,9 @@ class DriverDataModule(LightningDataModule):
             num_workers=self._test_num_workers,
             pin_memory=True,
             shuffle=False,
-            drop_last=True,
+            # score every segment: dropping the last partial batch silently
+            # shrinks the evaluation set (228 -> 224 at batch_size 16)
+            drop_last=False,
             collate_fn=self._collate_fn,
             **self._worker_kwargs(self._test_num_workers),
         )

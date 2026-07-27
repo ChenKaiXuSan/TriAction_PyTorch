@@ -35,6 +35,7 @@ from torchmetrics.classification import (
 )
 
 from project.models.make_model import select_model
+from project.trainer.metrics import build_stage_metrics
 from project.trainer.losses import build_class_weights, weighted_cross_entropy
 
 
@@ -67,10 +68,10 @@ class EarlyFusion3DCNNTrainer(LightningModule):
         # save the hyperparameters to the file and ckpt
         self.save_hyperparameters()
 
-        self._accuracy = MulticlassAccuracy(num_classes=self.num_classes)
-        self._precision = MulticlassPrecision(num_classes=self.num_classes)
-        self._recall = MulticlassRecall(num_classes=self.num_classes)
-        self._f1_score = MulticlassF1Score(num_classes=self.num_classes)
+        # accumulated per stage and reduced once per epoch (see project/trainer/metrics.py)
+        self.train_metrics, self.val_metrics, self.test_metrics = build_stage_metrics(
+            self.num_classes
+        )
         self._confusion_matrix = MulticlassConfusionMatrix(num_classes=self.num_classes)
         class_weights = build_class_weights(hparams)
         if class_weights is not None:
@@ -124,22 +125,13 @@ class EarlyFusion3DCNNTrainer(LightningModule):
         loss = weighted_cross_entropy(logits, label, self.class_weights)
         probs = torch.softmax(logits, dim=1)
 
-        video_acc = self._accuracy(probs, label)
-        video_precision = self._precision(probs, label)
-        video_recall = self._recall(probs, label)
-        video_f1_score = self._f1_score(probs, label)
-        _ = self._confusion_matrix(probs, label)
-
         self.log(
             f"{stage}/loss", loss, on_epoch=True, on_step=True, batch_size=label.size(0)
         )
+        metrics = getattr(self, f"{stage}_metrics")
+        metrics(probs, label)
         self.log_dict(
-            {
-                f"{stage}/video_acc": video_acc,
-                f"{stage}/video_precision": video_precision,
-                f"{stage}/video_recall": video_recall,
-                f"{stage}/video_f1_score": video_f1_score,
-            },
+            metrics,
             on_epoch=True,
             on_step=True,
             batch_size=label.size(0),

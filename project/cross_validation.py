@@ -26,6 +26,7 @@ Date      	By	Comments
 """
 
 import json
+import logging
 import random
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -35,6 +36,8 @@ from project.map_config import (
     CAM_NAMES,
     VideoSample,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class DefineCrossValidation(object):
@@ -68,6 +71,26 @@ class DefineCrossValidation(object):
             getattr(config.data, "magic_move_ratio", 0.1)
         )
         self.magic_move_seed: int = int(getattr(config.data, "magic_move_seed", 0))
+
+        # Split mode. "magic_move" moves a random ratio of videos to val and
+        # leaves the same person on both sides; "person_kfold" holds out whole
+        # persons so val measures generalisation to unseen drivers.
+        self.split_mode: str = str(getattr(config.data, "split_mode", "magic_move"))
+        if self.split_mode not in {"magic_move", "person_kfold"}:
+            raise ValueError(
+                f"Unsupported data.split_mode={self.split_mode!r}; "
+                "expected 'magic_move' or 'person_kfold'."
+            )
+        self.num_folds: int = int(getattr(config.data, "num_folds", 5))
+        self.fold: int = int(getattr(config.data, "fold", 0))
+        self.fold_seed: int = int(getattr(config.data, "fold_seed", 42))
+        if self.split_mode == "person_kfold":
+            if self.num_folds < 2:
+                raise ValueError(f"data.num_folds must be >= 2, got {self.num_folds}")
+            if not 0 <= self.fold < self.num_folds:
+                raise ValueError(
+                    f"data.fold must be in [0, {self.num_folds}), got {self.fold}"
+                )
 
     # --------- helpers ---------
     @staticmethod
@@ -151,6 +174,33 @@ class DefineCrossValidation(object):
         """Use all collected samples as the initial single training split."""
         return {"train": samples, "val": []}
 
+    @staticmethod
+    def person_kfold_split(
+        samples: List[VideoSample],
+        num_folds: int,
+        fold: int,
+        seed: int = 42,
+    ) -> Dict[str, List[VideoSample]]:
+        """Hold out every video of one person group as validation.
+
+        Persons -- not videos -- are the unit: with a per-video split the same
+        driver appears in train and val, so the score measures memorising
+        people rather than generalising to new ones.
+        """
+        persons = sorted({s.person_id for s in samples})
+        if num_folds > len(persons):
+            raise ValueError(
+                f"num_folds={num_folds} exceeds the {len(persons)} available persons."
+            )
+        shuffled = list(persons)
+        random.Random(seed).shuffle(shuffled)
+        # stride assignment keeps the folds within one person of each other
+        val_persons = set(shuffled[fold::num_folds])
+        return {
+            "train": [s for s in samples if s.person_id not in val_persons],
+            "val": [s for s in samples if s.person_id in val_persons],
+        }
+
     def magic_move(
         self,
         dataset_split: Dict[str, List[VideoSample]],
@@ -195,6 +245,21 @@ class DefineCrossValidation(object):
                 f"  video structure: videos/XX/(夜多|夜少|昼多|昼少)/(front|right|left).mp4"
             )
 
+        if self.split_mode == "person_kfold":
+            split = self.person_kfold_split(
+                samples, self.num_folds, self.fold, self.fold_seed
+            )
+            logger.info(
+                "person_kfold fold %d/%d: %d train videos, %d val videos "
+                "(val persons: %s)",
+                self.fold,
+                self.num_folds,
+                len(split["train"]),
+                len(split["val"]),
+                sorted({s.person_id for s in split["val"]}),
+            )
+            return split
+
         return self.build_single_split(samples)
 
     @staticmethod
@@ -238,9 +303,18 @@ class DefineCrossValidation(object):
         magic_move_ratio = self.magic_move_ratio
         magic_move_seed = self.magic_move_seed
 
-        index_name = (
-            "index_single_magicmove.json" if enable_magic_move else "index_single.json"
-        )
+        if self.split_mode == "person_kfold":
+            index_name = (
+                f"index_person_fold{self.fold}of{self.num_folds}"
+                f"_seed{self.fold_seed}.json"
+            )
+            enable_magic_move = False  # folds are already disjoint by person
+        else:
+            index_name = (
+                "index_single_magicmove.json"
+                if enable_magic_move
+                else "index_single.json"
+            )
         index_file = target_dir / index_name
 
         if not index_file.exists():

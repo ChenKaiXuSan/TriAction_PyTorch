@@ -58,6 +58,13 @@ data:
   head_roi_margin: 2.2
   head_roi_min_size: 64
 
+  # 切分方式：magic_move = 按视频随机挪 10% 到 val（同一个人会同时出现在两边）；
+  # person_kfold = 按人留出，val 全是训练时没见过的驾驶员（评估泛化用这个）
+  split_mode: magic_move        # magic_move | person_kfold
+  num_folds: 5                  # person_kfold 的折数
+  fold: 0                       # 当前跑第几折 [0, num_folds)
+  fold_seed: 42                 # 决定人员如何分配到各折
+
   magic_move: true              # 是否启用 magic_move
   magic_move_ratio: 0.1         # 比例（默认 0.1 = 10%）
   magic_move_seed: 0            # 随机种子（默认 0）
