@@ -19,6 +19,8 @@ loss:
   selection: ["cls", "attn_loss", "bg", "tmp"] # the loss selection for the total loss
   type: ce # ce | focal (focal uses focal_gamma; class_weights act as alpha)
   focal_gamma: 2.0
+  # 训练集类别频率（left/right/down/up），balanced_softmax 用
+  class_prior: [0.26, 0.20, 0.44, 0.09]
 
   lambda_list: [0.25, 0.5, 0.75, 1.0] # the lambda list for the total loss
   w_bg: 0.2 # the weight of background class for the loss function, used for cross validation with different class number
@@ -54,6 +56,7 @@ data:
   batch_size: 16 # segment batch size when batch_unit=segment
 
   mirror_direction_aug: false # train-only: hflip + left/right camera and label swap (rgb-only)
+  subtract_clip_mean: false # 减去每段的时间均值帧：抹掉静态外观（人脸/衣着/座舱），只留运动
   head_roi_stream: false # return sample["head_video"]: head-centered square crops per view (needs kpt dirs)
   head_roi_margin: 2.2
   head_roi_min_size: 64
@@ -64,6 +67,8 @@ data:
   num_folds: 5                  # person_kfold 的折数
   fold: 0                       # 当前跑第几折 [0, num_folds)
   fold_seed: 42                 # 决定人员如何分配到各折
+  nested_val: false             # true = 留出折作 test，另从训练人员里切 val（避免用同一份数据选 ckpt 又报告）
+  nested_val_persons: 3         # 内层 val 的人数
 
   magic_move: true              # 是否启用 magic_move
   magic_move_ratio: 0.1         # 比例（默认 0.1 = 10%）
@@ -139,6 +144,7 @@ model:
 
 train:
   # Training config
+  seed: 42 # global seed; vary it to measure run-to-run variance
   max_epochs: 50 # numer of epochs of training
   early_stopping: false # experiments run all max_epochs by default; true re-enables val/loss early stop
   early_stopping_patience: 5

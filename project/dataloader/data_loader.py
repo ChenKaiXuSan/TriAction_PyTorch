@@ -121,6 +121,7 @@ class DriverDataModule(LightningDataModule):
         self.mirror_direction_aug = bool(
             getattr(opt.data, "mirror_direction_aug", False)
         )
+        self.subtract_clip_mean = bool(getattr(opt.data, "subtract_clip_mean", False))
         self.head_roi_stream = bool(getattr(opt.data, "head_roi_stream", False))
         self.head_roi_margin = float(getattr(opt.data, "head_roi_margin", 2.2))
         self.head_roi_min_size = int(getattr(opt.data, "head_roi_min_size", 64))
@@ -166,6 +167,7 @@ class DriverDataModule(LightningDataModule):
             load_kpt=self.load_kpt,
             kpt_temporal_subsample_num=self.uniform_temporal_subsample_num,
             mirror_direction_aug=self.mirror_direction_aug,
+            subtract_clip_mean=self.subtract_clip_mean,
             head_roi_stream=self.head_roi_stream,
             head_roi_margin=self.head_roi_margin,
             head_roi_min_size=self.head_roi_min_size,
@@ -183,15 +185,19 @@ class DriverDataModule(LightningDataModule):
             load_rgb=self.load_rgb,
             load_kpt=self.load_kpt,
             kpt_temporal_subsample_num=self.uniform_temporal_subsample_num,
+            subtract_clip_mean=self.subtract_clip_mean,
             head_roi_stream=self.head_roi_stream,
             head_roi_margin=self.head_roi_margin,
             head_roi_min_size=self.head_roi_min_size,
         )
 
         # test dataset
+        # a nested person-kfold split supplies a separate "test" list; otherwise
+        # test reuses val (and the reported score is then checkpoint-selected on
+        # the same data, which is optimistic)
         self.test_gait_dataset = whole_video_dataset(
             experiment=self._experiment,
-            dataset_idx=self._dataset_idx["val"],
+            dataset_idx=self._dataset_idx.get("test", self._dataset_idx["val"]),
             annotation_dict=_annotation_dict,
             transform=self.mapping_transform,
             max_video_frames=self.max_video_frames,
@@ -200,6 +206,7 @@ class DriverDataModule(LightningDataModule):
             load_rgb=self.load_rgb,
             load_kpt=self.load_kpt,
             kpt_temporal_subsample_num=self.uniform_temporal_subsample_num,
+            subtract_clip_mean=self.subtract_clip_mean,
             head_roi_stream=self.head_roi_stream,
             head_roi_margin=self.head_roi_margin,
             head_roi_min_size=self.head_roi_min_size,

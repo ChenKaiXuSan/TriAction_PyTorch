@@ -104,7 +104,7 @@ def train(hparams: DictConfig, dataset_idx):
         list: best trained model, data loader
     """
 
-    seed_everything(42, workers=True)
+    seed_everything(int(getattr(hparams.train, "seed", 42)), workers=True)
 
     # * select experiment
     # TODO: add more experiment trainer here.

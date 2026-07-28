@@ -61,3 +61,35 @@ def test_split_is_deterministic_for_a_seed():
 def test_rejects_more_folds_than_persons():
     with pytest.raises(ValueError, match="exceeds"):
         DefineCrossValidation.person_kfold_split(_samples(num_persons=3), 5, 0, seed=42)
+
+
+def test_nested_split_keeps_test_disjoint_from_train_and_val():
+    samples = _samples(num_persons=12)
+    for fold in range(5):
+        sp = DefineCrossValidation.person_kfold_split(
+            samples, 5, fold, seed=42, nested_val_persons=2
+        )
+        assert set(sp) == {"train", "val", "test"}
+        tr = {s.person_id for s in sp["train"]}
+        va = {s.person_id for s in sp["val"]}
+        te = {s.person_id for s in sp["test"]}
+        assert va, f"fold {fold} inner val is empty"
+        assert not (tr & va) and not (tr & te) and not (va & te), (
+            f"fold {fold} leaks persons: train&val={tr & va} train&test={tr & te} val&test={va & te}"
+        )
+
+
+def test_nested_test_set_matches_the_non_nested_val_set():
+    samples = _samples(num_persons=12)
+    plain = DefineCrossValidation.person_kfold_split(samples, 5, 2, seed=42)
+    nested = DefineCrossValidation.person_kfold_split(
+        samples, 5, 2, seed=42, nested_val_persons=2
+    )
+    assert {s.person_id for s in plain["val"]} == {s.person_id for s in nested["test"]}
+
+
+def test_nested_rejects_consuming_every_training_person():
+    with pytest.raises(ValueError, match="no training persons"):
+        DefineCrossValidation.person_kfold_split(
+            _samples(num_persons=6), 5, 0, seed=42, nested_val_persons=99
+        )

@@ -71,16 +71,56 @@ def focal_loss(
     return ((1.0 - pt) ** gamma * ce).mean()
 
 
+def balanced_softmax_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    prior: torch.Tensor,
+    class_weights: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Balanced Softmax: shift logits by the log class prior during training.
+
+    Rare classes (up is 9% of training segments, right 20% against down's 44%)
+    are otherwise never predicted -- every model measured so far collapses onto
+    the two frequent classes. Inference uses the unshifted logits, which is the
+    point: the correction lives in the loss, not in the deployed model.
+    """
+    if prior.device != logits.device:
+        prior = prior.to(logits.device)
+    adjusted = logits + torch.log(prior.clamp_min(1e-12))
+    weight = class_weights
+    if weight is not None and weight.device != logits.device:
+        weight = weight.to(logits.device)
+    return F.cross_entropy(adjusted, labels.long(), weight=weight)
+
+
+def build_class_prior(hparams) -> torch.Tensor | None:
+    """Training class frequencies in `label_mapping_Dict` order, or None."""
+    loss_cfg = getattr(hparams, "loss", None)
+    values = getattr(loss_cfg, "class_prior", None) if loss_cfg is not None else None
+    if values is None:
+        return None
+    prior = torch.tensor([float(v) for v in values], dtype=torch.float32)
+    return prior / prior.sum()
+
+
 def classification_loss(
     logits: torch.Tensor,
     labels: torch.Tensor,
     class_weights: torch.Tensor | None,
     hparams=None,
 ) -> torch.Tensor:
-    """Dispatch on loss.type: 'ce' (default) or 'focal' (loss.focal_gamma)."""
+    """Dispatch on loss.type: 'ce' (default), 'focal', or 'balanced_softmax'."""
     loss_cfg = getattr(hparams, "loss", None) if hparams is not None else None
     loss_type = str(getattr(loss_cfg, "type", "ce")) if loss_cfg is not None else "ce"
     if loss_type == "focal":
         gamma = float(getattr(loss_cfg, "focal_gamma", 2.0))
         return focal_loss(logits, labels, class_weights, gamma=gamma)
+    if loss_type == "balanced_softmax":
+        prior = build_class_prior(hparams)
+        if prior is None:
+            raise ValueError(
+                "loss.type=balanced_softmax requires loss.class_prior "
+                "(training frequencies in left/right/down/up order)."
+            )
+        return balanced_softmax_loss(logits, labels, prior, class_weights)
     return weighted_cross_entropy(logits, labels, class_weights)

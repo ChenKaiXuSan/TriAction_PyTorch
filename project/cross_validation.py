@@ -84,6 +84,11 @@ class DefineCrossValidation(object):
         self.num_folds: int = int(getattr(config.data, "num_folds", 5))
         self.fold: int = int(getattr(config.data, "fold", 0))
         self.fold_seed: int = int(getattr(config.data, "fold_seed", 42))
+        # nested: the held-out fold becomes test, and a slice of the remaining
+        # persons becomes val, so checkpoints are never selected on the data
+        # they are reported on
+        self.nested_val: bool = bool(getattr(config.data, "nested_val", False))
+        self.nested_val_persons: int = int(getattr(config.data, "nested_val_persons", 3))
         if self.split_mode == "person_kfold":
             if self.num_folds < 2:
                 raise ValueError(f"data.num_folds must be >= 2, got {self.num_folds}")
@@ -180,6 +185,7 @@ class DefineCrossValidation(object):
         num_folds: int,
         fold: int,
         seed: int = 42,
+        nested_val_persons: int = 0,
     ) -> Dict[str, List[VideoSample]]:
         """Hold out every video of one person group as validation.
 
@@ -195,10 +201,27 @@ class DefineCrossValidation(object):
         shuffled = list(persons)
         random.Random(seed).shuffle(shuffled)
         # stride assignment keeps the folds within one person of each other
-        val_persons = set(shuffled[fold::num_folds])
+        held_out = set(shuffled[fold::num_folds])
+        split = {
+            "train": [s for s in samples if s.person_id not in held_out],
+            "val": [s for s in samples if s.person_id in held_out],
+        }
+        if not nested_val_persons:
+            return split
+
+        # carve an inner validation set out of the training persons; the
+        # held-out fold is kept purely for reporting
+        inner_pool = [p for p in shuffled if p not in held_out]
+        if nested_val_persons >= len(inner_pool):
+            raise ValueError(
+                f"nested_val_persons={nested_val_persons} leaves no training persons "
+                f"(only {len(inner_pool)} available outside the fold)."
+            )
+        inner_val = set(inner_pool[:nested_val_persons])
         return {
-            "train": [s for s in samples if s.person_id not in val_persons],
-            "val": [s for s in samples if s.person_id in val_persons],
+            "train": [s for s in split["train"] if s.person_id not in inner_val],
+            "val": [s for s in split["train"] if s.person_id in inner_val],
+            "test": split["val"],
         }
 
     def magic_move(
@@ -247,7 +270,11 @@ class DefineCrossValidation(object):
 
         if self.split_mode == "person_kfold":
             split = self.person_kfold_split(
-                samples, self.num_folds, self.fold, self.fold_seed
+                samples,
+                self.num_folds,
+                self.fold,
+                self.fold_seed,
+                nested_val_persons=self.nested_val_persons if self.nested_val else 0,
             )
             logger.info(
                 "person_kfold fold %d/%d: %d train videos, %d val videos "
@@ -304,9 +331,10 @@ class DefineCrossValidation(object):
         magic_move_seed = self.magic_move_seed
 
         if self.split_mode == "person_kfold":
+            nested_tag = f"_nested{self.nested_val_persons}" if self.nested_val else ""
             index_name = (
                 f"index_person_fold{self.fold}of{self.num_folds}"
-                f"_seed{self.fold_seed}.json"
+                f"_seed{self.fold_seed}{nested_tag}.json"
             )
             enable_magic_move = False  # folds are already disjoint by person
         else:
@@ -326,8 +354,9 @@ class DefineCrossValidation(object):
 
             # serialize
             serial: Dict[str, Any] = {
-                "train": [self._serialize_sample(s) for s in dataset_split["train"]],
-                "val": [self._serialize_sample(s) for s in dataset_split["val"]],
+                key: [self._serialize_sample(s) for s in dataset_split[key]]
+                for key in ("train", "val", "test")
+                if key in dataset_split
             }
 
             with open(index_file, "w", encoding="utf-8") as f:
@@ -346,6 +375,7 @@ class DefineCrossValidation(object):
             )
 
         return {
-            "train": [self._deserialize_sample(item) for item in serial["train"]],
-            "val": [self._deserialize_sample(item) for item in serial["val"]],
+            key: [self._deserialize_sample(item) for item in serial[key]]
+            for key in ("train", "val", "test")
+            if key in serial
         }

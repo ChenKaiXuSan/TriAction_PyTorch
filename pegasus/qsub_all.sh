@@ -37,6 +37,13 @@ Modes:
                     claim survives before spending on the rest
   ablation       K: all four attribution ablations (single-view / late fusion /
                     no kpt guidance / frozen backbone), 20 jobs
+  seeds          K: seeds 43/44 replicates of both headline arms (20 jobs)
+  nested         K: nested val split, so the reported fold is never used to
+                    pick the checkpoint (10 jobs)
+  methods        K: clip-mean subtraction (cross-driver) and balanced softmax
+                    (class collapse) (10 jobs)
+  recheck        K: old-protocol claims re-tested -- kpt token vs query,
+                    unfreeze 6, mirror aug, TS-CVA (20 jobs)
   kfold          K: person-wise 5-fold CV, 3dcnn baseline vs MV-ViViT
                     (aggregate with: python scripts/aggregate_folds.py)
   noes           no-early-stopping full-length variants of the matrix (21 jobs;
@@ -152,6 +159,78 @@ ablation_scripts=(
     run_k_mvfrozen_fold4.sh
 )
 
+seeds_scripts=(
+    run_k_s43vivitsingle_fold0.sh
+    run_k_s43vivitsingle_fold1.sh
+    run_k_s43vivitsingle_fold2.sh
+    run_k_s43vivitsingle_fold3.sh
+    run_k_s43vivitsingle_fold4.sh
+    run_k_s44vivitsingle_fold0.sh
+    run_k_s44vivitsingle_fold1.sh
+    run_k_s44vivitsingle_fold2.sh
+    run_k_s44vivitsingle_fold3.sh
+    run_k_s44vivitsingle_fold4.sh
+    run_k_s43mvvivit_fold0.sh
+    run_k_s43mvvivit_fold1.sh
+    run_k_s43mvvivit_fold2.sh
+    run_k_s43mvvivit_fold3.sh
+    run_k_s43mvvivit_fold4.sh
+    run_k_s44mvvivit_fold0.sh
+    run_k_s44mvvivit_fold1.sh
+    run_k_s44mvvivit_fold2.sh
+    run_k_s44mvvivit_fold3.sh
+    run_k_s44mvvivit_fold4.sh
+)
+
+nested_scripts=(
+    run_k_nestedvivitsingle_fold0.sh
+    run_k_nestedvivitsingle_fold1.sh
+    run_k_nestedvivitsingle_fold2.sh
+    run_k_nestedvivitsingle_fold3.sh
+    run_k_nestedvivitsingle_fold4.sh
+    run_k_nestedmvvivit_fold0.sh
+    run_k_nestedmvvivit_fold1.sh
+    run_k_nestedmvvivit_fold2.sh
+    run_k_nestedmvvivit_fold3.sh
+    run_k_nestedmvvivit_fold4.sh
+)
+
+methods_scripts=(
+    run_k_clipmean_fold0.sh
+    run_k_clipmean_fold1.sh
+    run_k_clipmean_fold2.sh
+    run_k_clipmean_fold3.sh
+    run_k_clipmean_fold4.sh
+    run_k_balsoftmax_fold0.sh
+    run_k_balsoftmax_fold1.sh
+    run_k_balsoftmax_fold2.sh
+    run_k_balsoftmax_fold3.sh
+    run_k_balsoftmax_fold4.sh
+)
+
+recheck_scripts=(
+    run_k_kpttoken_fold0.sh
+    run_k_kpttoken_fold1.sh
+    run_k_kpttoken_fold2.sh
+    run_k_kpttoken_fold3.sh
+    run_k_kpttoken_fold4.sh
+    run_k_unfreeze6_fold0.sh
+    run_k_unfreeze6_fold1.sh
+    run_k_unfreeze6_fold2.sh
+    run_k_unfreeze6_fold3.sh
+    run_k_unfreeze6_fold4.sh
+    run_k_mirror_fold0.sh
+    run_k_mirror_fold1.sh
+    run_k_mirror_fold2.sh
+    run_k_mirror_fold3.sh
+    run_k_mirror_fold4.sh
+    run_k_tscva_fold0.sh
+    run_k_tscva_fold1.sh
+    run_k_tscva_fold2.sh
+    run_k_tscva_fold3.sh
+    run_k_tscva_fold4.sh
+)
+
 ts_cva_scripts=(
     run_t_mid_no_gated_aggregation.sh
     run_t_mid_no_view_embedding.sh
@@ -195,6 +274,18 @@ case "$MODE" in
         ;;
     kfold)
         scripts=("${kfold_scripts[@]}")
+        ;;
+    seeds)
+        scripts=("${seeds_scripts[@]}")
+        ;;
+    nested)
+        scripts=("${nested_scripts[@]}")
+        ;;
+    methods)
+        scripts=("${methods_scripts[@]}")
+        ;;
+    recheck)
+        scripts=("${recheck_scripts[@]}")
         ;;
     ablation)
         scripts=("${ablation_scripts[@]}")

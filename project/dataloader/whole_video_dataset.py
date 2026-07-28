@@ -50,6 +50,7 @@ class LabeledVideoDataset(Dataset):
         head_roi_stream: bool = False,
         head_roi_margin: float = 2.2,
         head_roi_min_size: int = 64,
+        subtract_clip_mean: bool = False,
         max_video_frames: Optional[int] = None,  # 如果设置，将长video分块加载
         view_name: list = ["front", "left", "right"],
         annotator_id: Optional[int] = None,
@@ -74,6 +75,11 @@ class LabeledVideoDataset(Dataset):
         self.head_roi_stream = bool(head_roi_stream)
         self.head_roi_margin = float(head_roi_margin)
         self.head_roi_min_size = int(head_roi_min_size)
+        # Remove each clip's temporal mean frame. Under person-held-out CV the
+        # model starts memorising drivers by epoch 0-4; the static content
+        # (face, clothing, seat, cabin) is exactly what identifies a driver,
+        # while the direction of a head movement lives in the deviations.
+        self.subtract_clip_mean = bool(subtract_clip_mean)
         self._annotator_id = annotator_id
         self.kpt_temporal_subsample_num = int(kpt_temporal_subsample_num)
         self.batch_unit = str(batch_unit)
@@ -806,6 +812,12 @@ class LabeledVideoDataset(Dataset):
             return None
         return torch.stack(kpt_frames, dim=0)
 
+    def _maybe_subtract_clip_mean(self, video_ctwh: torch.Tensor) -> torch.Tensor:
+        """(C, T, H, W) minus its own temporal mean frame."""
+        if not self.subtract_clip_mean:
+            return video_ctwh
+        return video_ctwh - video_ctwh.mean(dim=1, keepdim=True)
+
     def _apply_transform(self, video_tchw: torch.Tensor) -> torch.Tensor:
         """
         Apply transform on a segment.
@@ -1155,8 +1167,8 @@ class LabeledVideoDataset(Dataset):
                     chunk_end_sec,
                 )
                 segment_frames = frames[segment_rel_start:segment_rel_end]
-                loaded_views[view_name] = self._apply_transform(segment_frames).permute(
-                    1, 0, 2, 3
+                loaded_views[view_name] = self._maybe_subtract_clip_mean(
+                    self._apply_transform(segment_frames).permute(1, 0, 2, 3)
                 )
             video_out = {view: loaded_views[view] for view in self.view_name}
 
@@ -1729,6 +1741,7 @@ def whole_video_dataset(
     kpt_temporal_subsample_num: int = 8,
     batch_unit: str = "chunk",
     mirror_direction_aug: bool = False,
+    subtract_clip_mean: bool = False,
     head_roi_stream: bool = False,
     head_roi_margin: float = 2.2,
     head_roi_min_size: int = 64,
@@ -1766,6 +1779,7 @@ def whole_video_dataset(
         kpt_temporal_subsample_num=kpt_temporal_subsample_num,
         batch_unit=batch_unit,
         mirror_direction_aug=mirror_direction_aug,
+        subtract_clip_mean=subtract_clip_mean,
         head_roi_stream=head_roi_stream,
         head_roi_margin=head_roi_margin,
         head_roi_min_size=head_roi_min_size,
