@@ -33,6 +33,10 @@ Modes:
   mv2            N2: MV-ViViT round 2 (partial unfreeze / regularization / ensemble)
   mv3            N3: unfreeze sweep + mirror aug + focal + kpt stream + LLRD
   mv4            N4: head-ROI dual stream / kpt-query pooling / aux head-pose
+  ablation_gate  K: single-view ViViT only -- decides whether the multi-view
+                    claim survives before spending on the rest
+  ablation       K: all four attribution ablations (single-view / late fusion /
+                    no kpt guidance / frozen backbone), 20 jobs
   kfold          K: person-wise 5-fold CV, 3dcnn baseline vs MV-ViViT
                     (aggregate with: python scripts/aggregate_folds.py)
   noes           no-early-stopping full-length variants of the matrix (21 jobs;
@@ -125,6 +129,29 @@ kfold_scripts=(
     run_k_mvvivit_fold4.sh
 )
 
+ablation_scripts=(
+    run_k_vivitsingle_fold0.sh
+    run_k_vivitsingle_fold1.sh
+    run_k_vivitsingle_fold2.sh
+    run_k_vivitsingle_fold3.sh
+    run_k_vivitsingle_fold4.sh
+    run_k_vivitlate_fold0.sh
+    run_k_vivitlate_fold1.sh
+    run_k_vivitlate_fold2.sh
+    run_k_vivitlate_fold3.sh
+    run_k_vivitlate_fold4.sh
+    run_k_mvnokptq_fold0.sh
+    run_k_mvnokptq_fold1.sh
+    run_k_mvnokptq_fold2.sh
+    run_k_mvnokptq_fold3.sh
+    run_k_mvnokptq_fold4.sh
+    run_k_mvfrozen_fold0.sh
+    run_k_mvfrozen_fold1.sh
+    run_k_mvfrozen_fold2.sh
+    run_k_mvfrozen_fold3.sh
+    run_k_mvfrozen_fold4.sh
+)
+
 ts_cva_scripts=(
     run_t_mid_no_gated_aggregation.sh
     run_t_mid_no_view_embedding.sh
@@ -168,6 +195,14 @@ case "$MODE" in
         ;;
     kfold)
         scripts=("${kfold_scripts[@]}")
+        ;;
+    ablation)
+        scripts=("${ablation_scripts[@]}")
+        ;;
+    ablation_gate)
+        scripts=(run_k_vivitsingle_fold0.sh run_k_vivitsingle_fold1.sh
+                 run_k_vivitsingle_fold2.sh run_k_vivitsingle_fold3.sh
+                 run_k_vivitsingle_fold4.sh)
         ;;
     noes)
         scripts=("${noes_scripts[@]}")
