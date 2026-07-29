@@ -96,3 +96,13 @@ def test_aux_pose_head_and_targets():
     assert aux.shape == (2, 2 * model.aux_pose_steps)
     target = head_pose_targets(torch.randn(2, 12, 70, 3), model.aux_pose_steps)
     assert target.shape == aux.shape
+
+
+def test_head_pose_stream_forward_and_grads():
+    model = MVViVit(_hparams(mv_vivit_head_pose_stream=True))
+    assert model.head_pose_proj is not None
+    kpts = {v: torch.randn(2, 8, 70, 3) for v in ["front", "left", "right"]}
+    logits = model(_videos(), kpts=kpts)
+    assert logits.shape == (2, 4)
+    logits.sum().backward()
+    assert any(p.grad is not None for p in model.head_pose_proj.parameters())

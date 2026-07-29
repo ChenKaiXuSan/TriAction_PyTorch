@@ -28,6 +28,8 @@ import torch
 import torch.nn as nn
 
 from project.models.hf_video_backbone import _load_transformers
+from project.models.head_pose_features import FEATURE_DIM as HEAD_POSE_DIM
+from project.models.head_pose_features import head_pose_features
 
 DEFAULT_VIVIT_MODEL = "google/vivit-b-16x2-kinetics400"
 
@@ -172,6 +174,27 @@ class MVViVit(nn.Module):
         else:
             self.head_stream_embedding = None
 
+        # head-pose stream v2: analytic per-frame pose features (angles,
+        # deltas, velocity, local shape) projected to one token per frame per
+        # view. Unlike the raw-kpt streams this feeds the head signal directly:
+        # the raw 70-point tensor is 60% hand rows and its absolute coordinates
+        # encode driver identity, which is why the earlier kpt arms measured
+        # no contribution.
+        self.use_head_pose_stream = bool(
+            getattr(model_cfg, "mv_vivit_head_pose_stream", False)
+        )
+        if self.use_head_pose_stream:
+            self.head_pose_proj = nn.Sequential(
+                nn.Linear(HEAD_POSE_DIM, self.feature_dim), nn.GELU()
+            )
+            self.head_pose_stream_embedding = nn.Parameter(
+                torch.zeros(1, 1, self.feature_dim)
+            )
+            nn.init.trunc_normal_(self.head_pose_stream_embedding, std=0.02)
+        else:
+            self.head_pose_proj = None
+            self.head_pose_stream_embedding = None
+
         # auxiliary head-pose regression (level-4 guidance): trained from
         # keypoint-derived yaw/pitch targets, unused at inference
         self.aux_pose_steps = int(getattr(model_cfg, "mv_vivit_aux_pose_steps", 8))
@@ -305,6 +328,17 @@ class MVViVit(nn.Module):
                     self._encode_view(head_videos[view]) + self.head_stream_embedding
                 )
                 tokens = torch.cat([tokens, head_tokens], dim=1)
+            if self.head_pose_proj is not None:
+                if kpts is None or kpts.get(view) is None:
+                    raise ValueError(
+                        f"mv_vivit_head_pose_stream=true requires keypoints for view "
+                        f"'{view}' (set model.input_type=rgb_kpt)."
+                    )
+                pose_feats = head_pose_features(kpts[view])
+                pose_tokens = (
+                    self.head_pose_proj(pose_feats) + self.head_pose_stream_embedding
+                )
+                tokens = torch.cat([tokens, pose_tokens], dim=1)
             if self.kpt_encoder is not None:
                 kpt_token = self._view_kpt_token(kpts, view)
                 kpt_query_tokens.append(kpt_token)
