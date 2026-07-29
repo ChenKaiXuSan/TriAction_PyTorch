@@ -10,7 +10,10 @@
 # TS-CVA mid fusion on 3dcnn -- the old mid-fusion champion
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-BATCH_SIZE="${BATCH_SIZE:-16}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
+ACCUMULATE_GRAD_BATCHES="${ACCUMULATE_GRAD_BATCHES:-2}"
+# TS-CVA runs three 3dcnn towers; 24 workers + batch 16 hit the host OOM killer
+NUM_WORKERS="${NUM_WORKERS:-12}"
 ACCUMULATE_GRAD_BATCHES="${ACCUMULATE_GRAD_BATCHES:-1}"
 FRAMES="${FRAMES:-32}"
 MAX_EPOCHS=50
