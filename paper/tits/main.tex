@@ -154,76 +154,135 @@ Section~\ref{sec:discussion} discusses implications and limitations.
 \section{Related Work}
 \label{sec:related}
 
-\subsection{Driver monitoring and head behaviour}
-Vision-based driver monitoring spans distraction and secondary-task
-recognition~\cite{martin2019driveact,ortega2020dmd,abouelnaga2018distracted},
-maneuver anticipation from cabin and road views~\cite{jain2015brain4cars},
-and drowsiness detection.  Fine-grained benchmarks such as
+\subsection{Driver monitoring: tasks and datasets}
+Vision-based driver monitoring has been surveyed extensively in the context
+of increasingly automated vehicles~\cite{ohnbar2016looking}.  The most
+studied task is distracted-driving posture classification, from early
+cabin-camera corpora~\cite{abouelnaga2018distracted} to the recent
+100-Driver dataset~\cite{wang2023driver100}, which scales the cohort to one
+hundred drivers precisely because cross-driver variation dominates smaller
+corpora.  Fine-grained behaviour recognition is anchored by
 Drive\&Act~\cite{martin2019driveact}, with five cabin views and a
 hierarchical activity taxonomy, and DMD~\cite{ortega2020dmd}, with
-multi-modal streams for attention analysis, established multi-camera cabins
-as the standard research setting and popularized cross-subject splits.
-Head pose itself is a classical topic: landmark-free regressors such as
-HopeNet~\cite{ruiz2018hopenet} and wide-range extensions such as
-WHENet~\cite{zhou2020whenet} estimate per-frame orientation, and head-pose
-dynamics have long served as a proxy for gaze zones in the cabin.  Our task
-differs from both lines: we classify the \emph{direction of spontaneous head
-movements}---a temporal, behaviour-level label---rather than static pose or
-scripted activities.  This narrower task isolates exactly the
-attention-relevant behaviour while inheriting every statistical difficulty
-of small-cohort cabin data; to our knowledge, the interaction of tiny
-cohorts, class imbalance, and identity leakage that we quantify in
-Sec.~\ref{sec:pitfalls} has not previously been analyzed in this setting.
+multi-modal streams for attention and alertness analysis; both established
+multi-camera cabins as the standard research setting and popularized
+cross-subject splits.  Related lines include maneuver anticipation from
+cabin and road views~\cite{jain2015brain4cars}, open-set driver anomaly
+detection~\cite{kopuklu2021dad}, and drowsiness
+detection~\cite{weng2016nthu}.  Across these efforts, cohort sizes of
+10--70 drivers are the norm, and while subject-independent evaluation is
+often reported, the \emph{interaction} of tiny cohorts, class imbalance,
+and identity leakage---and its capacity to fabricate architecture-level
+conclusions---has to our knowledge not been analyzed quantitatively in this
+domain; that analysis (Sec.~\ref{sec:pitfalls}) is one of our
+contributions.
+
+\subsection{Head pose and head dynamics in the cabin}
+Static head-pose estimation is a mature topic with dedicated benchmarks and
+landmark-free regressors: random-forest methods on depth
+data~\cite{fanelli2013biwi}, stage-wise soft aggregation in
+FSA-Net~\cite{yang2019fsanet}, classification-regression hybrids such as
+HopeNet~\cite{ruiz2018hopenet}, full-range extensions such as
+WHENet~\cite{zhou2020whenet}, and rotation-representation refinements such
+as 6DRepNet~\cite{hempel2022sixdrepnet}.  In the cabin, head pose commonly
+serves as a proxy for gaze zones~\cite{vora2018gaze}, and head dynamics
+have been used as an anticipatory cue for maneuvers~\cite{jain2015brain4cars}.
+Our task differs in that we classify the \emph{direction of a spontaneous
+head movement}---a temporal, behaviour-level label defined by motion rather
+than by any static orientation; a per-frame pose estimate is neither the
+input nor the output of our models.  We do, however, use analytically
+computed pose trajectories as a diagnostic probe and as a candidate prior
+(Sec.~\ref{sec:keypoints}), connecting the two lines: the probe shows the
+pose signal is genuinely informative for movement direction on unseen
+drivers, while our injection study shows that exploiting it inside a video
+model is harder than the intuition suggests.
 
 \subsection{Video backbones and parameter-efficient transfer}
-Video classification progressed from 3-D CNNs---I3D~\cite{carreira2017i3d},
-3-D ResNets~\cite{hara2018spatiotemporal}, SlowFast
-networks~\cite{feichtenhofer2019slowfast}---to transformer architectures
-such as TimeSformer~\cite{bertasius2021timesformer},
-ViViT~\cite{arnab2021vivit}, and self-supervised variants such as
-VideoMAE~\cite{tong2022videomae}, pretrained on large corpora such as
-Kinetics~\cite{kay2017kinetics}.  On small downstream datasets, full
-finetuning of such backbones is prone to overfitting, and
-parameter-efficient alternatives---adapter modules~\cite{houlsby2019adapters},
-light decoders over frozen features~\cite{lin2022frozenclip}---often match
-or exceed it.  Our results give this practice unusually sharp support: on 80
-training videos, partial unfreezing of the backbone contributed nothing
-measurable in any protocol we tested, while the pretrained representation
+Video classification progressed from 3-D
+CNNs---I3D~\cite{carreira2017i3d}, 3-D
+ResNets~\cite{hara2018spatiotemporal},
+SlowFast~\cite{feichtenhofer2019slowfast}, and efficiency-oriented designs
+such as X3D~\cite{feichtenhofer2020x3d}---to transformer architectures:
+TimeSformer~\cite{bertasius2021timesformer}, ViViT~\cite{arnab2021vivit},
+multiscale variants~\cite{fan2021mvit}, and shifted-window
+designs~\cite{liu2022videoswin}, typically pretrained on
+Kinetics~\cite{kay2017kinetics} or via masked
+autoencoding~\cite{tong2022videomae}.  Benchmarks whose labels are defined
+by motion rather than appearance, notably
+Something-Something~\cite{goyal2017something}, are the closest analogue to
+our direction-classification task.  For small downstream datasets, the
+parameter-efficient transfer literature---adapters~\cite{houlsby2019adapters},
+low-rank updates~\cite{hu2022lora}, visual prompt
+tuning~\cite{jia2022vpt}, and video-specific variants such as
+ST-Adapter~\cite{pan2022stadapter}, AIM~\cite{yang2023aim}, and light
+decoders over entirely frozen encoders~\cite{lin2022frozenclip}---argues
+that full finetuning is neither necessary nor optimal.  Our results give
+this argument unusually sharp support at the extreme end of the data
+spectrum: on 80 training videos, partial unfreezing of the backbone
+contributed nothing measurable in any protocol we tested
+(Sec.~\ref{sec:ablation}), while the frozen pretrained representation
 itself contributed the single largest accuracy gain of the study
 ($+5.5$ \micro{} over a Kinetics-pretrained 3-D CNN).
 
-\subsection{Multi-view fusion for action recognition}
-Multi-view action recognition classically distinguishes input-level (early),
-feature-level (mid), and decision-level (late) fusion; large multi-view
-corpora such as NTU~RGB+D~\cite{shahroudy2016ntu} drove view-invariant
-representation learning.  With transformer backbones, a natural mid-level
-operator is token-space attention across views~\cite{vaswani2017attention}:
-each view's tokens attend to every other view's, subsuming learned per-view
-weighting and pairwise alignment as special cases.  Our contribution is not
-a new fusion operator but a controlled \emph{attribution}: with backbone,
-pretraining, input sampling, and optimization held fixed, we measure what
-cross-view token attention buys \emph{beyond} single-view processing and
-beyond trivial logit-mean late fusion on a small cohort---and find that the
-benefit is real but lives on the class-balance and robustness axes, not
-headline accuracy (Sec.~\ref{sec:main}).
+\subsection{Multi-view action recognition and fusion}
+Multi-view and cross-view action recognition has been driven by large
+multi-camera corpora such as NTU~RGB+D~\cite{shahroudy2016ntu}, its 120-class
+extension~\cite{liu2020ntu120}, and continuous multi-modal benchmarks such
+as PKU-MMD~\cite{liu2017pkummd}, with fusion classically organized into
+input-level (early), feature-level (mid), and decision-level (late)
+strategies.  With transformer backbones, a natural mid-level operator is
+token-space attention across views~\cite{vaswani2017attention}: each view's
+tokens attend to every other view's, subsuming learned per-view weighting
+and pairwise view alignment as special cases.  Most multi-view work reports
+that fusion improves accuracy; far fewer studies control for the confound
+that a stronger backbone, rather than the fusion itself, may carry the
+gain.  Our contribution is such a controlled \emph{attribution}: with
+backbone, pretraining, input sampling, and optimization held fixed, we
+measure what cross-view token attention buys beyond single-view processing
+and beyond trivial logit-mean late fusion on a small cohort---and find the
+benefit real but located on the class-balance and robustness axes rather
+than headline accuracy (Sec.~\ref{sec:main}).
 
-\subsection{Evaluation pitfalls and negative results}
-Dataset bias and information leakage are recognized threats to empirical
-validity in machine learning~\cite{torralba2011bias,kapoor2023leakage}, and
-subject-dependent splits are known to inflate results substantially in
-wearable human-activity recognition~\cite{jordao2018har}.  Statistical
-practice for comparing classifiers on shared test sets---McNemar's
-test~\cite{mcnemar1947}, the analysis of Dietterich~\cite{dietterich1998},
-bootstrap confidence intervals~\cite{efron1993bootstrap}---is well
-established yet rarely applied in applied computer-vision papers, where
-single-run point estimates remain the norm.  Community efforts toward
-reproducibility~\cite{pineau2021reproducibility} advocate exactly the
-practices we adopt.  We add to this literature a documented, quantified case
-in driver monitoring where two independent defects interacted to produce a
-self-consistent false narrative---including a false negative
-(``architectures are indistinguishable'') as well as false positives---and
-we normalize the reporting of negative results for methods the community
-would plausibly retry.
+\subsection{Class imbalance and long-tailed recognition}
+Class imbalance is typically addressed by loss re-weighting and
+margin-based designs---focal loss~\cite{lin2017focal}, class-balanced
+loss~\cite{cui2019classbalanced}, label-distribution-aware
+margins~\cite{cao2019ldam}---by distribution-aware calibration such as
+balanced softmax~\cite{ren2020balanced} and logit
+adjustment~\cite{menon2021logit}, or by decoupling representation and
+classifier learning~\cite{kang2020decoupling}.  These techniques were
+developed and validated predominantly on large-scale image benchmarks.  Our
+study contributes a cautionary data point at the opposite extreme: on a
+small-cohort video task evaluated subject-independently, every imbalance
+remedy we tested was neutral or harmful (Sec.~\ref{sec:collapse}), and the
+failure was not monotone in class frequency---the second-largest class
+failed nearly as badly as the rarest---indicating that visual
+confusability, not rarity alone, drives the collapse.  Transferring
+long-tail machinery to this regime is an open problem.
+
+\subsection{Evaluation methodology, leakage, and negative results}
+The reliability of empirical conclusions in machine learning has been
+questioned from several directions: dataset bias~\cite{torralba2011bias},
+test-set overfitting and replication studies~\cite{recht2019imagenet,
+beyer2020done}, run-to-run variance unaccounted for in
+benchmarks~\cite{bouthillier2021accounting}, and information leakage as a
+principal driver of a reproducibility crisis in applied
+ML~\cite{kapoor2023leakage}.  Domain studies show the specific harm of
+subject-dependent splits: record-wise instead of subject-wise
+cross-validation inflates clinical prediction results~\cite{saeb2017needs},
+and the same effect is documented for wearable activity
+recognition~\cite{jordao2018har}.  Statistical practice for comparing
+classifiers on shared test sets is long
+established---McNemar's test~\cite{mcnemar1947}, Dietterich's
+analysis~\cite{dietterich1998}, bootstrap confidence
+intervals~\cite{efron1993bootstrap}---yet applied vision papers still
+mostly report single-run point estimates, and community reproducibility
+programs~\cite{pineau2021reproducibility} exist precisely to close this
+gap.  We add to this literature a fully quantified case study in driver
+monitoring in which two independent, individually mundane defects
+interacted to produce a self-consistent false narrative---including a false
+negative as well as false positives---and we normalize the reporting of
+negative results for methods the community would plausibly retry.
 
 \section{Task and Dataset}
 \label{sec:data}
@@ -867,7 +926,7 @@ We release the protocol, statistical tooling, and per-run predictions.
 \section*{Acknowledgments}
 To be completed.
 
-\begin{thebibliography}{29}
+\begin{thebibliography}{52}
 
 \bibitem{martin2019driveact} M.~Martin \emph{et al.}, ``Drive\&Act: A
 multi-modal dataset for fine-grained driver behavior recognition in
@@ -970,6 +1029,106 @@ long-tailed visual recognition,'' in \emph{Proc.\ NeurIPS}, 2020.
 \bibitem{cui2019classbalanced} Y.~Cui, M.~Jia, T.-Y. Lin, Y.~Song, and
 S.~Belongie, ``Class-balanced loss based on effective number of samples,''
 in \emph{Proc.\ IEEE/CVF CVPR}, 2019.
+
+
+\bibitem{ohnbar2016looking} E.~Ohn-Bar and M.~M. Trivedi, ``Looking at
+humans in the age of self-driving and highly automated vehicles,''
+\emph{IEEE Trans.\ Intelligent Vehicles}, vol.~1, no.~1, 2016.
+
+\bibitem{wang2023driver100} J.~Wang \emph{et al.}, ``100-Driver: A
+large-scale, diverse dataset for distracted driver classification,''
+\emph{IEEE Trans.\ Intelligent Transportation Systems}, 2023.
+
+\bibitem{kopuklu2021dad} O.~K\"op\"ukl\"u, J.~Zheng, H.~Xu, and G.~Rigoll,
+``Driver anomaly detection: A dataset and contrastive learning approach,''
+in \emph{Proc.\ IEEE/CVF WACV}, 2021.
+
+\bibitem{weng2016nthu} C.-H. Weng, Y.-H. Lai, and S.-H. Lai, ``Driver
+drowsiness detection via a hierarchical temporal deep belief network,'' in
+\emph{Proc.\ ACCV Workshops}, 2016.
+
+\bibitem{fanelli2013biwi} G.~Fanelli, M.~Dantone, J.~Gall, A.~Fossati, and
+L.~Van~Gool, ``Random forests for real time 3D face analysis,''
+\emph{Int.\ J.\ Computer Vision}, vol.~101, no.~3, 2013.
+
+\bibitem{yang2019fsanet} T.-Y. Yang, Y.-T. Chen, Y.-Y. Lin, and
+Y.-Y. Chuang, ``FSA-Net: Learning fine-grained structure aggregation for
+head pose estimation from a single image,'' in \emph{Proc.\ IEEE/CVF CVPR},
+2019.
+
+\bibitem{hempel2022sixdrepnet} T.~Hempel, A.~A. Abdelrahman, and
+A.~Al-Hamadi, ``6D rotation representation for unconstrained head pose
+estimation,'' in \emph{Proc.\ IEEE ICIP}, 2022.
+
+\bibitem{vora2018gaze} S.~Vora, A.~Rangesh, and M.~M. Trivedi, ``Driver
+gaze zone estimation using convolutional neural networks: A general
+framework and ablative analysis,'' \emph{IEEE Trans.\ Intelligent
+Vehicles}, vol.~3, no.~3, 2018.
+
+\bibitem{feichtenhofer2020x3d} C.~Feichtenhofer, ``X3D: Expanding
+architectures for efficient video recognition,'' in \emph{Proc.\ IEEE/CVF
+CVPR}, 2020.
+
+\bibitem{fan2021mvit} H.~Fan \emph{et al.}, ``Multiscale vision
+transformers,'' in \emph{Proc.\ IEEE/CVF ICCV}, 2021.
+
+\bibitem{liu2022videoswin} Z.~Liu \emph{et al.}, ``Video Swin
+transformer,'' in \emph{Proc.\ IEEE/CVF CVPR}, 2022.
+
+\bibitem{goyal2017something} R.~Goyal \emph{et al.}, ``The
+``something something'' video database for learning and evaluating visual
+common sense,'' in \emph{Proc.\ IEEE ICCV}, 2017.
+
+\bibitem{hu2022lora} E.~J. Hu \emph{et al.}, ``LoRA: Low-rank adaptation of
+large language models,'' in \emph{Proc.\ ICLR}, 2022.
+
+\bibitem{jia2022vpt} M.~Jia \emph{et al.}, ``Visual prompt tuning,'' in
+\emph{Proc.\ ECCV}, 2022.
+
+\bibitem{pan2022stadapter} J.~Pan, Z.~Lin, X.~Zhu, J.~Shao, and H.~Li,
+``ST-Adapter: Parameter-efficient image-to-video transfer learning,'' in
+\emph{Proc.\ NeurIPS}, 2022.
+
+\bibitem{yang2023aim} T.~Yang, Y.~Zhu, Y.~Xie, A.~Zhang, C.~Chen, and
+M.~Li, ``AIM: Adapting image models for efficient video action
+recognition,'' in \emph{Proc.\ ICLR}, 2023.
+
+\bibitem{liu2020ntu120} J.~Liu, A.~Shahroudy, M.~Perez, G.~Wang, L.-Y.
+Duan, and A.~C. Kot, ``NTU RGB+D 120: A large-scale benchmark for 3D human
+activity understanding,'' \emph{IEEE Trans.\ Pattern Analysis and Machine
+Intelligence}, vol.~42, no.~10, 2020.
+
+\bibitem{liu2017pkummd} C.~Liu, Y.~Hu, Y.~Li, S.~Song, and J.~Liu,
+``PKU-MMD: A large scale benchmark for continuous multi-modal human action
+understanding,'' \emph{arXiv:1703.07475}, 2017.
+
+\bibitem{cao2019ldam} K.~Cao, C.~Wei, A.~Gaidon, N.~Arechiga, and T.~Ma,
+``Learning imbalanced datasets with label-distribution-aware margin loss,''
+in \emph{Proc.\ NeurIPS}, 2019.
+
+\bibitem{kang2020decoupling} B.~Kang \emph{et al.}, ``Decoupling
+representation and classifier for long-tailed recognition,'' in
+\emph{Proc.\ ICLR}, 2020.
+
+\bibitem{menon2021logit} A.~K. Menon, S.~Jayasumana, A.~S. Rawat, H.~Jain,
+A.~Veit, and S.~Kumar, ``Long-tail learning via logit adjustment,'' in
+\emph{Proc.\ ICLR}, 2021.
+
+\bibitem{recht2019imagenet} B.~Recht, R.~Roelofs, L.~Schmidt, and
+V.~Shankar, ``Do ImageNet classifiers generalize to ImageNet?'' in
+\emph{Proc.\ ICML}, 2019.
+
+\bibitem{beyer2020done} L.~Beyer, O.~J. H\'enaff, A.~Kolesnikov, X.~Zhai,
+and A.~van den Oord, ``Are we done with ImageNet?''
+\emph{arXiv:2006.07159}, 2020.
+
+\bibitem{bouthillier2021accounting} X.~Bouthillier \emph{et al.},
+``Accounting for variance in machine learning benchmarks,'' in
+\emph{Proc.\ MLSys}, 2021.
+
+\bibitem{saeb2017needs} S.~Saeb, L.~Lonini, A.~Jayaraman, D.~C. Mohr, and
+K.~P. Kording, ``The need to approximate the use-case in clinical machine
+learning,'' \emph{GigaScience}, vol.~6, no.~5, 2017.
 
 % TODO: cite the exact SAM-3D body estimator used for keypoints.
 
