@@ -130,6 +130,7 @@ model:
   mv_vivit_kpt_stream: false # append a per-view keypoint-trajectory token (needs input_type=rgb_kpt)
   mv_vivit_kpt_hidden: 256
   mv_vivit_head_pose_stream: false # 解析头部姿态特征（角度/差分/局部形状）逐帧成 token 注入融合序列
+  mv_vivit_raw_pose_stream: false # 对照：同样逐帧 token 但用原始 kpt 展平
   mv_vivit_kpt_query_pooling: false # pool fused tokens with kpt-trajectory queries instead of mean
   mv_vivit_head_stream: false # encode head-ROI crops as a second token stream (needs data.head_roi_stream)
   mv_vivit_aux_pose_weight: 0.0 # >0 adds head-pose (yaw/pitch) regression from kpts as aux loss

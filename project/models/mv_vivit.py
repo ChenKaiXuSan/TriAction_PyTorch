@@ -195,6 +195,25 @@ class MVViVit(nn.Module):
             self.head_pose_proj = None
             self.head_pose_stream_embedding = None
 
+        # CONTROL for the head-pose stream: identical per-frame token pipeline
+        # but fed the raw flattened keypoints instead of the analytic features.
+        # Separates "the analytic representation matters" from "any extra
+        # per-frame tokens help".
+        self.use_raw_pose_stream = bool(
+            getattr(model_cfg, "mv_vivit_raw_pose_stream", False)
+        )
+        if self.use_raw_pose_stream:
+            self.raw_pose_proj = nn.Sequential(
+                nn.LazyLinear(self.feature_dim), nn.GELU()
+            )
+            self.raw_pose_stream_embedding = nn.Parameter(
+                torch.zeros(1, 1, self.feature_dim)
+            )
+            nn.init.trunc_normal_(self.raw_pose_stream_embedding, std=0.02)
+        else:
+            self.raw_pose_proj = None
+            self.raw_pose_stream_embedding = None
+
         # auxiliary head-pose regression (level-4 guidance): trained from
         # keypoint-derived yaw/pitch targets, unused at inference
         self.aux_pose_steps = int(getattr(model_cfg, "mv_vivit_aux_pose_steps", 8))
@@ -339,6 +358,17 @@ class MVViVit(nn.Module):
                     self.head_pose_proj(pose_feats) + self.head_pose_stream_embedding
                 )
                 tokens = torch.cat([tokens, pose_tokens], dim=1)
+            if self.raw_pose_proj is not None:
+                if kpts is None or kpts.get(view) is None:
+                    raise ValueError(
+                        f"mv_vivit_raw_pose_stream=true requires keypoints for view "
+                        f"'{view}' (set model.input_type=rgb_kpt)."
+                    )
+                raw = kpts[view].float().flatten(2)  # (B, T, K*3)
+                raw_tokens = (
+                    self.raw_pose_proj(raw) + self.raw_pose_stream_embedding
+                )
+                tokens = torch.cat([tokens, raw_tokens], dim=1)
             if self.kpt_encoder is not None:
                 kpt_token = self._view_kpt_token(kpts, view)
                 kpt_query_tokens.append(kpt_token)

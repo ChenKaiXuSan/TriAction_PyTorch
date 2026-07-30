@@ -106,3 +106,13 @@ def test_head_pose_stream_forward_and_grads():
     assert logits.shape == (2, 4)
     logits.sum().backward()
     assert any(p.grad is not None for p in model.head_pose_proj.parameters())
+
+
+def test_raw_pose_stream_control_forward():
+    model = MVViVit(_hparams(mv_vivit_raw_pose_stream=True))
+    assert model.raw_pose_proj is not None
+    kpts = {v: torch.randn(2, 8, 70, 3) for v in ["front", "left", "right"]}
+    logits = model(_videos(), kpts=kpts)
+    assert logits.shape == (2, 4)
+    logits.sum().backward()
+    assert any(p.grad is not None for p in model.raw_pose_proj.parameters())
