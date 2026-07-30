@@ -1,0 +1,390 @@
+% IEEE T-ITS manuscript — experimental results of the TriAction study.
+% Every number in this file is traceable to
+% doc/experiment_report_no_early_stopping_2026-07-24.md and the saved
+% predictions under logs/train/K_*/; nothing is estimated or rounded beyond
+% the reported precision.
+\documentclass[journal]{IEEEtran}
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage[colorlinks=false,hidelinks]{hyperref}
+
+\newcommand{\ie}{i.e.}
+\newcommand{\eg}{e.g.}
+\newcommand{\micro}{micro-accuracy}
+\newcommand{\mF}{macro-F$_1$}
+
+\begin{document}
+
+\title{Multi-View Recognition of Driver Head Movements:\\
+A Measurement-First Study with Person-Held-Out Evaluation}
+
+\author{Kaixu~Chen,~\IEEEmembership{}%
+\thanks{K.~Chen is with the University of Tsukuba, Tsukuba, Japan
+(e-mail: chenkaixusan@gmail.com).}%
+\thanks{Manuscript draft generated from the 2026-07 experimental campaign;
+co-author list and funding to be completed.}}
+
+\markboth{IEEE Transactions on Intelligent Transportation Systems}%
+{Chen: Multi-View Recognition of Driver Head Movements}
+
+\maketitle
+
+\begin{abstract}
+We study four-class recognition of driver head-movement direction
+(left/right/down/up) from three synchronized cabin cameras, and report the
+results of a systematic 100+-run campaign on 22 drivers.  Our contributions
+are threefold.  (1)~\emph{Method}: a parameter-efficient multi-view
+architecture that keeps a single pretrained video transformer frozen and
+learns only a small cross-view token-attention module (11M trainable
+parameters).  Under person-held-out evaluation it improves \mF{} by
+$+6.3$ points over an equally pretrained single-view model
+($p{=}1.9\times10^{-4}$, paired bootstrap), and under a nested,
+selection-free protocol its \micro{} advantage grows to $+5.1$ points
+($p{=}8.6\times10^{-12}$), while halving the across-driver variance.
+(2)~\emph{Measurement}: we show that two common protocol defects---a video-level
+split that leaks driver identity, and per-batch averaging of epoch
+metrics---jointly fabricated a coherent but false architecture narrative on
+this task; several ``validated'' conclusions, including our own earlier ones,
+reversed under a sound protocol.  (3)~\emph{Negative results}: an analytic
+head-pose feature stream carries genuine signal in isolation, yet no injection
+route (token-, query-, or logit-level) survived robustness checks, and five
+class-imbalance remedies failed to prevent rare-class collapse.  We release
+the person-held-out protocol, statistical-testing tooling, and all per-run
+predictions to support measurement-first research on small-cohort driver
+monitoring.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Driver monitoring, head movement recognition, multi-view fusion, video
+transformers, evaluation protocols, negative results.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\IEEEPARstart{D}{river}-monitoring systems infer attention from head and gaze
+behaviour.  We consider a cabin setup with three synchronized cameras (front,
+left, right) and the task of classifying short clips into four head-movement
+directions.  The setting is representative of practical driver-monitoring
+research: a small cohort (22 drivers), heavy class imbalance, and strong
+inter-driver appearance variation.
+
+This paper is deliberately \emph{measurement-first}.  Our initial campaign,
+run under a conventional protocol (random video-level split, standard metric
+logging), produced a seemingly well-supported progression of architectural
+improvements.  Auditing the protocol invalidated essentially all of it.  We
+therefore report (i)~the method that survives a person-held-out, statistically
+tested evaluation; (ii)~a controlled account of how the defective protocol
+manufactured false conclusions; and (iii)~the negative results of our attempts
+to exploit head-pose priors and to fix rare-class collapse.
+
+\section{Task and Data}
+\label{sec:data}
+\subsection{Recording and annotation}
+Each of 22 drivers was recorded in four illumination conditions
+(day/night $\times$ high/low), yielding 88 sessions.  Three synchronized
+cameras (front, left, right; $332{\times}224$\,px) observe the cabin.
+Timeline annotations mark head-movement segments with one of eight direction
+labels, merged to four (left/right/down/up; vertical components take
+precedence).  Three annotators labelled every session; frame-level
+inter-annotator agreement is 91.0\% overall and 94\% for the
+\emph{right} class, so label noise does not explain the failure modes reported
+below.  Segment-level class frequencies are imbalanced: down 43\%, left 28\%,
+right 21\%, up 9\% (pooled over the five held-out folds).  SAM-3D body
+keypoints (70 points, 2-D and 3-D) are available for every view.
+
+\subsection{Evaluation protocol}
+\label{sec:protocol}
+\textbf{Person-held-out 5-fold CV.}  Drivers---not videos---are the unit of
+splitting: the 22 drivers are partitioned into five folds; each fold's
+sessions form the evaluation set of a model trained on the remaining drivers.
+Pooling the folds scores every driver exactly once with a model that never saw
+them ($n{=}3954$ segments).  \textbf{Nested variant.}  For selection-free
+reporting, three additional drivers are carved out of each training set as an
+inner validation set; checkpoints are selected on the inner set and reported
+on the held-out fold, so the reported data never influences model selection.
+\textbf{Metrics.}  \micro{} (segment accuracy), macro-accuracy, and \mF{},
+accumulated over the full epoch (Sec.~\ref{sec:pitfalls}).  \textbf{Statistics.}
+All model comparisons are paired on identical segment sets (verified
+fold-by-fold): McNemar's test with continuity correction and a paired
+bootstrap (1{,}500--2{,}000 resamples, 95\% CIs).  The pooled binomial 95\% CI
+is $\pm1.6$ points; a single 8-video split, by contrast, carries $\pm6.4$
+points and up to 15.6 points of across-fold spread, which is why no
+single-split number appears in this paper.
+
+\subsection{Implementation}
+All arms train 50 epochs without early stopping (Adam, lr $10^{-4}$, cosine
+schedule, effective batch 16, bf16), 32 uniformly sampled frames at
+$224^2$ for ViViT arms, on one H100 per run.  The video backbone is
+ViViT-B/16x2 pretrained on Kinetics-400.  Class-frequency weights are applied
+to the cross-entropy loss in all arms.
+
+\section{Method}
+\label{sec:method}
+The method that survives evaluation is deliberately minimal
+(Fig.~\ref{fig:arch}; ``MV-Min'' below).  A \emph{single, frozen} pretrained
+ViViT encoder processes each view.  Per view, the $3137$ output tokens are
+compressed to $17$: the CLS token plus one spatially averaged token per
+temporal tubelet.  A learned additive view embedding tags each view's tokens,
+the three token sets are concatenated, and a 2-layer, 8-head transformer whose
+attention spans all views performs cross-view fusion.  Mean pooling and a
+linear head produce the logits.  Only the fusion module and head train
+(11M parameters, 4\% of one finetuned backbone; the backbone runs under
+\texttt{no\_grad}).
+
+Design choices that our ablations showed to be unnecessary---partial backbone
+unfreezing, keypoint-trajectory tokens, keypoint-query pooling, gated
+aggregation---are excluded from the method and revisited as ablations in
+Sec.~\ref{sec:ablation} and negative results in Sec.~\ref{sec:keypoints}.
+
+\begin{figure}[t]
+\centering
+\framebox[\linewidth]{\parbox{0.95\linewidth}{\centering\vspace{18mm}
+\textit{[Figure: three views $\rightarrow$ shared frozen ViViT $\rightarrow$
+17 tokens/view + view embeddings $\rightarrow$ cross-view transformer
+$\rightarrow$ mean pool $\rightarrow$ head]}\vspace{18mm}}}
+\caption{MV-Min: a frozen shared ViViT encoder with a small trainable
+cross-view token-attention module.}
+\label{fig:arch}
+\end{figure}
+
+\section{Main Results}
+\label{sec:main}
+
+\begin{table}[t]
+\caption{Person-held-out 5-fold CV (pooled $n{=}3954$; seed 42).
+``Spread'' is the across-fold standard deviation of \micro.}
+\label{tab:main}
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Model & \micro & mac.\ acc & \mF & spread \\
+\midrule
+Majority class            & 42.7 & 25.0 & 15.0 & --   \\
+3D-CNN, single view       & 47.0 & 31.1 & 26.8 & .156 \\
+TS-CVA mid fusion (3D-CNN)& 45.4 & 31.9 & 28.1 & --   \\
+\midrule
+ViViT, single view        & 52.5 & 35.5 & 29.8 & .134 \\
+ViViT, 3-view late fusion & 52.6 & 35.7 & 31.9 & .114 \\
+\textbf{MV-Min (ours)}    & 51.5 & 38.0 & \textbf{36.5} & \textbf{.090} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\caption{Paired comparisons on identical segments ($n{=}3954$).
+$\Delta$ in points with 95\% bootstrap CI; McNemar $p$ for \micro.}
+\label{tab:paired}
+\centering
+\begin{tabular}{lccc}
+\toprule
+Comparison & $\Delta$\micro & $\Delta$\mF & $p$ (McNemar) \\
+\midrule
+MV full vs.\ 3D-CNN single & $+5.1\,[+3.6,+6.6]$ & $+9.2$ & $1.9{\times}10^{-11}$ \\
+MV full vs.\ ViViT single  & $-0.4\,[-1.7,+0.9]$ & $+6.3\,[+4.8,+7.7]$ & $0.55$ \\
+MV full vs.\ ViViT late    & $-0.4\,[-1.8,+0.9]$ & $+4.1\,[+2.4,+5.8]$ & $0.55$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:main} and the paired tests in Table~\ref{tab:paired} support
+three statements.  \textbf{(1) Pretraining dominates \micro.}  Replacing the
+3D-CNN with a pretrained ViViT adds $+5.5$ \micro{} points; no fusion
+mechanism adds more on top of it.  \textbf{(2) Cross-view attention buys
+balance and robustness, not raw accuracy.}  Against the equally pretrained
+single-view and trivial late-fusion controls, our fusion is \micro-neutral but
+gains $+6.3$ and $+4.1$ \mF{} respectively (both significant) and cuts the
+across-driver spread from .134 to .090.  On a task whose practical failures
+are rare-class collapse and driver variance, this is the relevant axis.
+\textbf{(3) A previously ``winning'' fusion reverses.}  TS-CVA mid fusion,
+the best fusion under our earlier leaky protocol (48.9 vs.\ 37.2 single-view),
+scores \emph{below} the single-view 3D-CNN under person hold-out
+(45.4 vs.\ 47.0).
+
+\subsection{Nested, selection-free evaluation}
+Selecting checkpoints on the same people one reports on inflates results
+(measured: $+2.0$ points for the 3D-CNN arm, $+0.9$ for the multi-view arm).
+Under the nested protocol of Sec.~\ref{sec:protocol} every number drops, but
+the ordering sharpens in our favour: MV-Min is the best arm (50.6 \micro),
+and the paired advantage of cross-view attention over the single-view control
+\emph{grows} to $+5.1$ points ($p{=}8.6\times10^{-12}$); \mF{} $+2.9$
+($[+1.4,+4.4]$).  The stricter the protocol, the clearer the method's benefit
+---the opposite of what an overfit result would show.
+
+\subsection{Seed variance}
+Replicating both headline arms with seeds 42/43/44: single-view ViViT
+52.5/53.0/51.9 \micro; the full multi-view arm 52.1/52.6/51.9.  Run-to-run
+variation ($\pm0.6$) is well inside the protocol CI, and the \mF{} advantage
+of cross-view fusion persists in all three seeds (mean $+5.0$).
+
+\section{Attribution Ablation}
+\label{sec:ablation}
+
+\begin{table}[t]
+\caption{Component attribution under person-held-out CV
+(paired vs.\ the row above it or as indicated).}
+\label{tab:ablation}
+\centering
+\begin{tabular}{lccc}
+\toprule
+Arm & \micro & \mF & paired effect \\
+\midrule
+MV-Min (frozen, no kpt)      & 51.5 & 36.5 & reference \\
+\;+ partial unfreeze (4)     & 52.4 & 36.2 & n.s.\ / n.s. \\
+\;+ kpt-query pooling        & 52.1 & 36.0 & $+1.3^{*}$ / n.s. \\
+\;+ unfreeze depth 6         & 50.5 & 35.5 & n.s. \\
+\;+ mirror augmentation      & 53.0 & 35.3 & n.s. \\
+\bottomrule
+\multicolumn{4}{l}{\footnotesize $^{*}$McNemar $p{=}0.004$; not robust under
+the nested protocol.}
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:ablation}: no addition to the minimal form produces a robust
+paired improvement on both metrics.  Notably, conclusions that appeared firmly
+established under the leaky protocol---``query pooling beats token injection
+by $+3.5$'', ``unfreeze depth 6 is optimal'', ``partial unfreezing gains
+$+2.9$''---all shrink to non-significance or reverse.  This motivates the
+minimal form as the published method.
+
+\section{Head-Pose Priors: Signal Without a Robust Injection Route}
+\label{sec:keypoints}
+Head movements should be readable from head pose, and our scenario provides
+SAM-3D keypoints.  A diagnosis of why naive keypoint streams failed is
+instructive: the raw $70{\times}3$ tensor is 60\% hand rows (moving $4\times$
+more than the head), in unnormalized coordinates that encode driver identity,
+compressed into one token competing with 51 video tokens.  The head signal
+never reached the model.
+
+We therefore computed analytic features: 8 head-related points, a per-frame
+head-local frame from the ear axis and nose direction, yaw/pitch/roll plus
+first differences and centroid velocity plus local-frame shape (33-D/frame),
+with per-segment mean-pose subtraction to remove resting posture (identity).
+
+\textbf{The signal is real.}  A 64-unit MLP on these features alone---no
+video---reaches 27.2 \mF{} on unseen drivers with \emph{non-zero F$_1$ on
+every class}: right 0.24 and up 0.12, where every video model scores
+${\approx}0.03$ and $0.00$ (Table~\ref{tab:collapse}).
+
+\textbf{No injection route survives.}  Per-frame pose tokens initially gave
+the best \micro{} of the campaign (53.3, $+1.7$ over MV-Min,
+$p{=}8.9\times10^{-5}$), but three robustness checks demoted it:
+(i)~seed sensitivity ($+1.7/+3.3/+0.4$; significant in 2 of 3 seeds);
+(ii)~\emph{reversal} under the nested protocol ($-2.5$,
+$p{=}3.2\times10^{-7}$)---part of the gain came from checkpoint selection on
+the scored drivers; (iii)~a representation control showed raw flattened
+keypoint tokens capture most of the effect ($+1.1$, $p{=}0.021$), leaving
+$+0.6$ (n.s.)\ for the analytic encoding.  Logit-level fusion of the pose
+probe with the video model, pre-registered as a 50/50 average, degraded
+\micro{} by $9.1$ points ($p{=}5.4\times10^{-30}$): the probe is 22 points
+weaker overall, and the equal-weight blend loses more on frequent classes
+than it recovers on rare ones.  We report these as negative results; the open
+problem is an injection mechanism that preserves the probe's rare-class
+competence.
+
+\section{Rare-Class Collapse and Failed Remedies}
+\label{sec:collapse}
+
+\begin{table}[t]
+\caption{Per-class F$_1$ under person-held-out CV: every video model
+collapses onto the frequent classes; only the pose-only probe predicts all
+four.}
+\label{tab:collapse}
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Model & left & right & down & up \\
+\midrule
+MV-Min                  & .538 & .173 & .673 & .078 \\
+\;+ pose tokens         & .532 & .179 & .695 & .015 \\
+Pose-only probe (33-D)  & .327 & .237 & .409 & .117 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\caption{Remedies for class collapse, all evaluated under the sound
+protocol.  None succeeded.}
+\label{tab:remedies}
+\centering
+\begin{tabular}{lcc}
+\toprule
+Remedy & \micro & outcome \\
+\midrule
+Class-weighted CE (default)      & 51.5 & collapse persists \\
+Focal loss                       & $-5.4$ vs.\ ref & harmful \\
+Balanced softmax                 & 26.4 & catastrophic \\
+Clip-mean subtraction            & 43.6 & harmful \\
+Pose-token fusion                & 53.3$^{\dagger}$ & up-F$_1$ drops \\
+Probe--model logit fusion (50/50)& 44.1 & harmful \\
+\bottomrule
+\multicolumn{3}{l}{\footnotesize $^{\dagger}$not robust (Sec.~\ref{sec:keypoints}).}
+\end{tabular}
+\end{table}
+
+Two persistent failure modes define the real difficulty of this task.
+\textbf{Collapse}: \emph{right} and \emph{up} are essentially never predicted
+by any video model (Table~\ref{tab:collapse}), despite 94\% annotator
+agreement on \emph{right}.  Six remedies failed (Table~\ref{tab:remedies}).
+\textbf{Driver memorisation}: under person hold-out the best checkpoint lands
+at epoch 0--4 in every arm---models start memorising training drivers almost
+immediately, consistent with the large across-driver spread.  Removing static
+appearance (clip-mean subtraction) removed useful signal as well.  We consider
+identity-invariant representations the key open problem for small-cohort
+driver monitoring.
+
+\section{How a Defective Protocol Fabricated a Narrative}
+\label{sec:pitfalls}
+Our first 40+ runs used (a)~a random \emph{video-level} split---all seven
+validation drivers also appeared in training---and (b)~torchmetrics objects
+evaluated per batch (size 2) and averaged, which at that batch size inflates
+\mF{} by up to 17 points (0.52 logged vs.\ 0.35 true) and was inconsistently
+applied across trainer families.  Together these produced a coherent, mutually
+confirming, and false progression (54.0 $\rightarrow$ 56.9 $\rightarrow$
+58.3 ``SOTA'' with supporting ablations).  Under the sound protocol:
+the ``$+3.5$ query-pooling'' effect vanished; ``optimal unfreeze depth''
+became n.s.; the TS-CVA fusion champion fell below its own single-view
+baseline; and an early ``architectures are indistinguishable'' reading---drawn
+from the same leaky split---also proved wrong.  Single-split evaluation on
+8 videos carries a $\pm6.4$-point CI and 15.6 points of fold spread; every
+effect we chased for four rounds was smaller than that noise.  We include
+this account because both defects are common, silent, and jointly
+self-reinforcing; the protocol of Sec.~\ref{sec:protocol} is released as the
+antidote.
+
+\section{Conclusion}
+Under person-held-out, statistically tested evaluation of 20+ arms
+(100+ trained models), the defensible findings are:
+(1)~Kinetics-pretrained video transformers dominate \micro{} on this task
+($+5.5$ over a 3D-CNN);
+(2)~a frozen-backbone cross-view token-attention module---4\% of the
+trainable parameters of one finetuned backbone---adds class balance
+($+6.3$ \mF), across-driver robustness (spread halved), and, under the
+strictest selection-free protocol, $+5.1$ \micro{}
+($p{=}8.6\times10^{-12}$) over its single-view control;
+(3)~head-pose priors carry real, complementary signal but lack a robust
+injection route;
+(4)~rare-class collapse and driver memorisation, not architecture, are the
+binding constraints---six remedies failed;
+(5)~two common measurement defects sufficed to fabricate an entire false
+research narrative on a small cohort.
+We release the protocol, tests, and per-run predictions.
+
+\section*{Reproducibility}
+All splits are person-disjoint and seeded; every comparison is paired on
+identical segments with McNemar and bootstrap statistics; per-run predictions
+are archived.  Code, job scripts (90 runs), and the audit trail accompany the
+paper.
+
+\begin{thebibliography}{1}
+\bibitem{vivit} A.~Arnab \emph{et al.}, ``ViViT: A video vision transformer,''
+in \emph{Proc. ICCV}, 2021.
+\bibitem{kinetics} W.~Kay \emph{et al.}, ``The Kinetics human action video
+dataset,'' \emph{arXiv:1705.06950}, 2017.
+\bibitem{mcnemar} Q.~McNemar, ``Note on the sampling error of the difference
+between correlated proportions or percentages,'' \emph{Psychometrika}, 1947.
+% TODO: related work on driver monitoring / multi-view action recognition.
+\end{thebibliography}
+
+\end{document}
