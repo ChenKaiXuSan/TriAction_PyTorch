@@ -144,8 +144,8 @@ def train_probe(Xtr, ytr, Xva, yva, seed=0):
         loss.backward()
         opt.step()
     with torch.no_grad():
-        pred = model(Xva).argmax(1).numpy()
-    return pred
+        probs = torch.softmax(model(Xva), dim=1).numpy()
+    return probs.argmax(1), probs
 
 
 def main() -> None:
@@ -158,7 +158,7 @@ def main() -> None:
         data = build_fold_features(fold)
         Xtr, ytr, sk_tr = data["train"]
         Xva, yva, sk_va = data["val"]
-        pred = train_probe(Xtr, ytr, Xva, yva)
+        pred, _ = train_probe(Xtr, ytr, Xva, yva)
         acc = float((pred == yva).mean())
         maj = float(np.bincount(yva, minlength=4).max() / len(yva))
         print(
